@@ -20,6 +20,9 @@ pub enum Network {
     Host,
     /// New network namespace with only loopback.
     None,
+    /// Join the project's shared network namespace (see `network.rs`): loopback
+    /// only, shared with the other services of the project.
+    Project,
 }
 
 impl FromStr for Network {
@@ -155,9 +158,25 @@ pub struct ContainerSpec {
     pub labels: BTreeMap<String, String>,
     #[serde(default)]
     pub health: Option<HealthSpec>,
+    /// With `Network::Project`: the project's network directory (holder pid,
+    /// lock). Resolved when the container starts, so a restarted holder works.
+    #[serde(default)]
+    pub project_net: Option<PathBuf>,
+    /// A hosts file shared by the project's containers, bind-mounted over
+    /// `/etc/hosts` (maps service names to the shared loopback).
+    #[serde(default)]
+    pub hosts_file: Option<PathBuf>,
 }
 
 impl ContainerSpec {
+    /// Puts the container in a project's shared network namespace.
+    pub fn in_project_network(mut self, project_net: PathBuf, hosts_file: PathBuf) -> Self {
+        self.network = Network::Project;
+        self.project_net = Some(project_net);
+        self.hosts_file = Some(hosts_file);
+        self
+    }
+
     pub fn with_labels(mut self, labels: BTreeMap<String, String>) -> Self {
         self.labels = labels;
         self
@@ -181,6 +200,8 @@ impl ContainerSpec {
             network,
             labels: BTreeMap::new(),
             health: None,
+            project_net: None,
+            hosts_file: None,
         }
     }
 }

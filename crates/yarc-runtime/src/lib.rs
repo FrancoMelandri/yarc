@@ -19,6 +19,9 @@ mod lifecycle;
 #[cfg(target_os = "linux")]
 mod linux;
 mod logs;
+mod network;
+#[cfg(target_os = "linux")]
+mod netns;
 mod paths;
 mod plan;
 #[cfg(target_os = "linux")]
@@ -35,6 +38,9 @@ pub use lifecycle::{exec_container, remove_container, run_recorded, run_recorded
 #[cfg(target_os = "linux")]
 pub use linux::{process_alive, start, Running};
 pub use logs::{format_timestamp, read_log, read_log_from, LogEntry, LogWriter, Stream};
+pub use network::{NetInfo, PortMap, ProjectNet};
+#[cfg(target_os = "linux")]
+pub use netns::{run_holder, stop_holder};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
 pub use spec::{resolve_process, ContainerSpec, HealthSpec, ImageDefaults, Network, Overrides, Process, DEFAULT_PATH};
 pub use state::{describe, now_ms, ContainerState, Health, HealthStatus, Status};

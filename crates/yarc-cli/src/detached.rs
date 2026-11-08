@@ -144,9 +144,107 @@ pub fn shim(_root: &Path, _args: ShimArgs) -> Result<()> {
     anyhow::bail!("running containers needs Linux; run yarc inside WSL")
 }
 
+/// `8080:80` → host port 8080, container port 80.
+pub fn parse_publish(s: &str) -> Result<yarc_runtime::PortMap> {
+    let parse = |p: &str| p.parse::<u16>().ok().filter(|n| *n != 0);
+    match s.split_once(':').and_then(|(h, c)| Some((parse(h)?, parse(c)?))) {
+        Some((host, container)) => Ok(yarc_runtime::PortMap { host, container }),
+        None => anyhow::bail!("invalid port mapping '{s}', expected HOST:CONTAINER"),
+    }
+}
+
+/// Starts the project's network holder (`yarc __holder`) detached and waits
+/// until it reports `ready`, or the reason it could not start (e.g. a host
+/// port that is already in use).
+#[cfg(target_os = "linux")]
+pub fn start_holder(root: &Path, project: &str, publish: &[yarc_runtime::PortMap]) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::{self, BufRead, BufReader};
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    use anyhow::Context;
+
+    let net = yarc_runtime::ProjectNet::new(root, project)?;
+    net.create_dir()?;
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(net.log_path())
+        .with_context(|| format!("cannot open {}", net.log_path().display()))?;
+    let mut cmd = Command::new(std::env::current_exe().context("cannot locate the yarc executable")?);
+    cmd.arg("--root").arg(root).arg("__holder").arg(project);
+    for p in publish {
+        cmd.arg("--publish").arg(format!("{}:{}", p.host, p.container));
+    }
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log);
+    // SAFETY: setsid(2) is async-signal-safe; the holder must outlive this
+    // command and the terminal it was started from.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().context("cannot start the project network holder")?;
+    let mut report = String::new();
+    BufReader::new(child.stdout.take().expect("stdout is piped"))
+        .read_line(&mut report)
+        .context("cannot read the holder's report")?;
+    match report.trim() {
+        "ready" => Ok(()),
+        line => {
+            let _ = child.wait();
+            match line.strip_prefix("error ") {
+                Some(msg) => anyhow::bail!("{msg}"),
+                None => anyhow::bail!("the project network holder exited before reporting (see {})", net.log_path().display()),
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn start_holder(_root: &Path, _project: &str, _publish: &[yarc_runtime::PortMap]) -> Result<()> {
+    anyhow::bail!("running projects needs Linux; run yarc inside WSL")
+}
+
+/// Entry point of the hidden `__holder` command.
+#[cfg(target_os = "linux")]
+pub fn holder(root: &Path, args: crate::cli::HolderArgs) -> Result<()> {
+    use std::io::{self, Write};
+
+    let net = yarc_runtime::ProjectNet::new(root, &args.project)?;
+    let publish = args.publish.iter().map(|p| parse_publish(p)).collect::<Result<Vec<_>>>()?;
+    yarc_runtime::run_holder(&net, &publish, |outcome| {
+        let mut out = io::stdout();
+        let _ = match outcome {
+            Ok(()) => writeln!(out, "ready"),
+            Err(msg) => writeln!(out, "error {}", msg.replace('\n', " ")),
+        };
+        let _ = out.flush();
+    })?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn holder(_root: &Path, _args: crate::cli::HolderArgs) -> Result<()> {
+    anyhow::bail!("running projects needs Linux; run yarc inside WSL")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publish_arguments() {
+        let ok = parse_publish("8080:80").unwrap();
+        assert_eq!((ok.host, ok.container), (8080, 80));
+        for bad in ["80", "a:b", "0:80", "80:0", "70000:1", "1:2:3", ":80", "80:", ""] {
+            assert!(parse_publish(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn started_report() {

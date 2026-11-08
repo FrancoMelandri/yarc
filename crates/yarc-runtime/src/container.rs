@@ -197,7 +197,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Ids double as directory names, so this also blocks path traversal.
-fn check_id(id: &str) -> Result<()> {
+pub(crate) fn check_id(id: &str) -> Result<()> {
     let mut chars = id.chars();
     let ok = id.len() <= MAX_NAME
         && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())

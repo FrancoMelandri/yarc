@@ -100,10 +100,13 @@ pub fn mount_plan(spec: &ContainerSpec) -> Vec<SetupOp> {
     });
 
     // sysfs can only be mounted by a user namespace that owns the network
-    // namespace; otherwise fall back to a read-only view of the host's /sys.
+    // namespace (our own, or the project's); otherwise fall back to a read-only
+    // view of the host's /sys.
     let ro_locked = MountOpts { readonly: true, ..locked };
     plan.push(match spec.network {
-        Network::None => SetupOp::Fs { fstype: "sysfs", target: "sys".into(), data: String::new(), opts: ro_locked, optional: true },
+        Network::None | Network::Project => {
+            SetupOp::Fs { fstype: "sysfs", target: "sys".into(), data: String::new(), opts: ro_locked, optional: true }
+        }
         Network::Host => SetupOp::Bind {
             source: PathBuf::from("/sys"),
             target: "sys".into(),
@@ -115,13 +118,24 @@ pub fn mount_plan(spec: &ContainerSpec) -> Vec<SetupOp> {
     });
 
     plan.push(SetupOp::WriteFile { path: "etc/hostname".into(), contents: format!("{}\n", spec.hostname) });
-    plan.push(SetupOp::WriteFile {
-        path: "etc/hosts".into(),
-        contents: format!(
-            "127.0.0.1\tlocalhost {}\n::1\tlocalhost ip6-localhost ip6-loopback\n",
-            spec.hostname
-        ),
-    });
+    match &spec.hosts_file {
+        // The project's shared hosts file (service names → loopback).
+        Some(shared) => plan.push(SetupOp::Bind {
+            source: shared.clone(),
+            target: "etc/hosts".into(),
+            kind: BindKind::File,
+            recursive: false,
+            opts: MountOpts::default(),
+            optional: false,
+        }),
+        None => plan.push(SetupOp::WriteFile {
+            path: "etc/hosts".into(),
+            contents: format!(
+                "127.0.0.1\tlocalhost {}\n::1\tlocalhost ip6-localhost ip6-loopback\n",
+                spec.hostname
+            ),
+        }),
+    }
     if spec.network == Network::Host {
         plan.push(SetupOp::CopyHost { source: PathBuf::from("/etc/resolv.conf"), path: "etc/resolv.conf".into() });
     }
@@ -200,8 +214,23 @@ mod tests {
         let host = mount_plan(&spec(Network::Host));
         assert!(host.iter().any(|op| matches!(op, SetupOp::Bind { target, recursive: true, opts, .. } if target == "sys" && opts.readonly)));
         assert!(!host.iter().any(|op| matches!(op, SetupOp::Fs { fstype: "sysfs", .. })));
-        let none = mount_plan(&spec(Network::None));
-        assert!(none.iter().any(|op| matches!(op, SetupOp::Fs { fstype: "sysfs", opts, .. } if opts.readonly)));
+        for own_netns in [Network::None, Network::Project] {
+            let plan = mount_plan(&spec(own_netns));
+            assert!(plan.iter().any(|op| matches!(op, SetupOp::Fs { fstype: "sysfs", opts, .. } if opts.readonly)), "{own_netns:?}");
+        }
+    }
+
+    #[test]
+    fn a_project_container_binds_the_shared_hosts_file_and_skips_resolv_conf() {
+        let s = spec(Network::Host).in_project_network("/p/net".into(), "/p/net/hosts".into());
+        assert_eq!(s.network, Network::Project);
+        let plan = mount_plan(&s);
+        assert!(plan.iter().any(|op| matches!(op,
+            SetupOp::Bind { source, target, kind: BindKind::File, optional: false, .. }
+                if source == &PathBuf::from("/p/net/hosts") && target == "etc/hosts")));
+        assert!(!plan.iter().any(|op| matches!(op, SetupOp::WriteFile { path, .. } if path == "etc/hosts")));
+        assert!(!plan.iter().any(|op| matches!(op, SetupOp::CopyHost { .. })), "no outbound network, no resolv.conf");
+        assert!(plan.iter().any(|op| matches!(op, SetupOp::WriteFile { path, .. } if path == "etc/hostname")));
     }
 
     #[test]

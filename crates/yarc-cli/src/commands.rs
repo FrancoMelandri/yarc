@@ -85,6 +85,9 @@ pub struct NewContainer {
     pub network: yarc_runtime::Network,
     pub labels: std::collections::BTreeMap<String, String>,
     pub health: Option<yarc_runtime::HealthSpec>,
+    /// A project's network directory and shared hosts file; makes the container
+    /// join the project's network (overriding `network`).
+    pub project_net: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 #[cfg(unix)]
@@ -104,6 +107,7 @@ fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
             network: args.network,
             labels: Default::default(),
             health: None,
+            project_net: None,
         },
     )
 }
@@ -137,7 +141,12 @@ pub fn create_new(root: &Path, new: NewContainer) -> Result<String> {
     let rootfs = containers.rootfs_path(&id);
     let built = (|| -> Result<()> {
         yarc_oci::unpack_image(&store, &reference, &rootfs)?;
-        let spec = ContainerSpec::new(&id, &new.image, rootfs.clone(), process, new.network).with_labels(new.labels).with_health(new.health);
+        let mut spec = ContainerSpec::new(&id, &new.image, rootfs.clone(), process, new.network)
+            .with_labels(new.labels)
+            .with_health(new.health);
+        if let Some((dir, hosts)) = new.project_net {
+            spec = spec.in_project_network(dir, hosts);
+        }
         containers.save(&spec)?;
         Ok(())
     })();

@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use yarc_config::{Condition, Project, Service};
+use yarc_config::{Condition, PortMapping, Project, Protocol, Service};
 use yarc_oci::Digest;
-use yarc_runtime::{ContainerSpec, ContainerStore, RuntimeError};
+use yarc_runtime::{ContainerSpec, ContainerStore, PortMap, ProjectNet, RuntimeError};
 
 pub const LABEL_PROJECT: &str = "yarc.project";
 pub const LABEL_SERVICE: &str = "yarc.service";
@@ -104,11 +104,45 @@ pub fn start_order(project: &Project) -> Result<Vec<String>> {
     }
 }
 
+/// The TCP ports the project publishes on `127.0.0.1`, sorted. A host port can
+/// only be published once. (UDP mappings are accepted in the file but not
+/// published.)
+pub fn published_ports(project: &Project) -> Result<Vec<PortMap>> {
+    let mut seen: BTreeMap<u16, &str> = BTreeMap::new();
+    let mut maps = Vec::new();
+    for (name, svc) in &project.services {
+        for p in svc.ports.iter().filter(|p| p.protocol == Protocol::Tcp) {
+            if let Some(other) = seen.insert(p.host, name) {
+                bail!("host port {} is published by both {other} and {name}", p.host);
+            }
+            maps.push(PortMap { host: p.host, container: p.container });
+        }
+    }
+    maps.sort();
+    Ok(maps)
+}
+
+/// `127.0.0.1:8080->80/tcp, 5353->53/udp (not published)` for listings.
+pub fn format_ports(ports: &[PortMapping]) -> String {
+    ports
+        .iter()
+        .map(|p| match p.protocol {
+            Protocol::Tcp => format!("127.0.0.1:{}->{}/tcp", p.host, p.container),
+            Protocol::Udp => format!("{}->{}/udp (not published)", p.host, p.container),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Bump when the way containers are wired up changes in a way that requires
+/// recreating them (1: host network, 2: shared project network).
+const NETWORK_MODEL: u32 = 2;
+
 /// Hash of everything that, when changed, requires a new container. `needs` is
 /// left out on purpose: it only affects start order.
 pub fn service_hash(service: &Service) -> String {
     let canonical = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|net{NETWORK_MODEL}",
         service.image, service.cmd, service.env, service.ports, service.volumes, service.health
     );
     Digest::of(canonical.as_bytes()).hex().to_string()
@@ -167,6 +201,7 @@ pub fn load(opts: &Opts) -> Result<Loaded> {
     for service in project.services.keys() {
         check_service_name(&name, service)?;
     }
+    published_ports(&project)?; // duplicates are a mistake in the file
     let order = start_order(&project)?;
     Ok(Loaded { name, file, project, order })
 }
@@ -205,6 +240,9 @@ pub fn config(opts: &Opts) -> Result<()> {
             format!("  needs: {}", list.join(", "))
         };
         println!("  {name:<width$}  {}  image {}{needs}", container_name(&loaded.name, name), svc.image);
+        if !svc.ports.is_empty() {
+            println!("  {:<width$}  ports {}", "", format_ports(&svc.ports));
+        }
     }
     Ok(())
 }
@@ -213,11 +251,18 @@ pub fn ps(root: &Path, opts: &Opts) -> Result<()> {
     let name = project_name(opts)?;
     let store = ContainerStore::open(root)?;
     let mut specs = project_containers(&store, &name)?;
-    sort_by_service_order(&mut specs, &shutdown_order(opts), false);
-    println!("{:<16} {:<28} {:<14} IMAGE", "SERVICE", "CONTAINER", "STATUS");
+    let loaded = load(opts).ok();
+    let order = loaded.as_ref().map(|l| l.order.clone()).unwrap_or_default();
+    sort_by_service_order(&mut specs, &order, false);
+    println!("{:<16} {:<28} {:<22} {:<24} PORTS", "SERVICE", "CONTAINER", "STATUS", "IMAGE");
     for spec in &specs {
         let service = spec.labels.get(LABEL_SERVICE).map_or("-", String::as_str);
-        println!("{:<16} {:<28} {:<14} {}", service, spec.id, store.status_text(&spec.id)?, spec.image);
+        let ports = loaded
+            .as_ref()
+            .and_then(|l| l.project.services.get(service))
+            .map(|s| format_ports(&s.ports))
+            .unwrap_or_default();
+        println!("{:<16} {:<28} {:<22} {:<24} {}", service, spec.id, store.status_text(&spec.id)?, spec.image, ports);
     }
     Ok(())
 }
@@ -347,7 +392,7 @@ enum Action {
 /// Brings one service up; returns the log offset from which this run's output
 /// starts (so a foreground `up` does not replay earlier runs).
 #[cfg(target_os = "linux")]
-fn up_service(root: &Path, store: &ContainerStore, project: &str, service: &str, def: &Service) -> Result<u64> {
+fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, project: &str, service: &str, def: &Service) -> Result<u64> {
     use crate::commands::{create_new, NewContainer};
 
     let cname = container_name(project, service);
@@ -377,7 +422,8 @@ fn up_service(root: &Path, store: &ContainerStore, project: &str, service: &str,
                     env: def.env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
                     ..Default::default()
                 },
-                network: yarc_runtime::Network::Host,
+                network: yarc_runtime::Network::Project,
+                project_net: Some((net.dir().to_path_buf(), net.hosts_path())),
                 labels: labels(project, service, &hash),
                 health: def.health.as_ref().map(|h| yarc_runtime::HealthSpec::shell(&h.cmd, h.interval)),
             },
@@ -398,13 +444,56 @@ fn up_service(root: &Path, store: &ContainerStore, project: &str, service: &str,
     Ok(offset)
 }
 
+/// Makes sure the project's network exists with exactly the published ports of
+/// the file. Containers join the network's namespaces when they start, so when
+/// the network has to be replaced (ports changed, or its holder died) the
+/// containers still running in the old one are stopped first; `up` then starts
+/// them again in the new one.
+#[cfg(target_os = "linux")]
+fn ensure_network(root: &Path, store: &ContainerStore, loaded: &Loaded) -> Result<ProjectNet> {
+    let wanted = published_ports(&loaded.project)?;
+    let net = ProjectNet::new(root, &loaded.name)?;
+    let current = if net.is_alive()? { net.info()? } else { None };
+    if let Some(info) = &current {
+        let mut have = info.published.clone();
+        have.sort();
+        if have == wanted {
+            return Ok(net);
+        }
+    }
+
+    let running: Vec<ContainerSpec> = project_containers(store, &loaded.name)?
+        .into_iter()
+        .filter(|c| store.is_supervised(&c.id).unwrap_or(false))
+        .collect();
+    if current.is_some() || !running.is_empty() {
+        eprintln!("recreating the project network ({})", if current.is_some() { "published ports changed" } else { "its holder is gone" });
+        let mut running = running;
+        sort_by_service_order(&mut running, &loaded.order, true);
+        stop_all(store, &running, Duration::from_secs(10))?;
+        yarc_runtime::stop_holder(&net, Duration::from_secs(5))?;
+    }
+    crate::detached::start_holder(root, &loaded.name, &wanted).context("cannot create the project network")?;
+    Ok(net)
+}
+
+/// Names the services use to reach each other: service names and container names.
+#[cfg(target_os = "linux")]
+fn host_names(loaded: &Loaded) -> Vec<String> {
+    loaded
+        .order
+        .iter()
+        .flat_map(|s| [s.clone(), container_name(&loaded.name, s)])
+        .collect()
+}
+
 /// Warns about parts of the file that are accepted but not implemented yet.
 #[cfg(target_os = "linux")]
 fn warn_unsupported(loaded: &Loaded) {
     for name in &loaded.order {
         let svc = &loaded.project.services[name];
-        if !svc.ports.is_empty() {
-            eprintln!("warning: {name}: ports are not published yet");
+        if svc.ports.iter().any(|p| p.protocol == Protocol::Udp) {
+            eprintln!("warning: {name}: only TCP ports are published; UDP mappings are ignored");
         }
         if !svc.volumes.is_empty() {
             eprintln!("warning: {name}: volumes are not mounted yet");
@@ -476,6 +565,8 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
     if !detach {
         interrupt::install();
     }
+    let net = ensure_network(root, &store, &loaded)?;
+    net.write_hosts(&host_names(&loaded))?;
 
     let mut sources = Vec::new();
     for service in &loaded.order {
@@ -497,7 +588,7 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
         if interrupted {
             break;
         }
-        let offset = up_service(root, &store, &loaded.name, service, &loaded.project.services[service])
+        let offset = up_service(root, &store, &net, &loaded.name, service, &loaded.project.services[service])
             .with_context(|| format!("service {service}"))?;
         sources.push(Source { label: service.clone(), id: container_name(&loaded.name, service), offset });
     }
@@ -525,13 +616,20 @@ pub fn down(root: &Path, opts: &Opts, timeout: Duration) -> Result<()> {
     let store = ContainerStore::open(root)?;
     let mut specs = project_containers(&store, &name)?;
     sort_by_service_order(&mut specs, &shutdown_order(opts), true);
-    if specs.is_empty() {
+    let net = ProjectNet::new(root, &name)?;
+    if specs.is_empty() && !net.dir().exists() {
         eprintln!("project {name}: nothing to remove");
     }
     for spec in &specs {
         yarc_runtime::stop_container(&store, &spec.id, timeout)?;
         yarc_runtime::remove_container(&store, &spec.id, true)?;
         eprintln!("{}: stopped and removed", spec.id);
+    }
+    // The network goes last: the containers were using it.
+    if net.dir().exists() {
+        yarc_runtime::stop_holder(&net, Duration::from_secs(5))?;
+        net.remove()?;
+        eprintln!("project {name}: network removed");
     }
     Ok(())
 }
@@ -628,6 +726,31 @@ mod tests {
             }
         }
         assert_eq!(start_order(&p).unwrap(), order);
+    }
+
+    #[test]
+    fn published_ports_are_tcp_only_sorted_and_unique() {
+        let p = project(
+            "services:\n  web: { image: a, ports: ['8080:80', '5353:53/udp'] }\n  api: { image: b, ports: ['3000:3000'] }\n",
+        );
+        let ports = published_ports(&p).unwrap();
+        assert_eq!(ports.iter().map(|m| (m.host, m.container)).collect::<Vec<_>>(), [(3000, 3000), (8080, 80)]);
+
+        let dup = project("services:\n  a: { image: x, ports: ['80:80'] }\n  b: { image: y, ports: ['80:8080'] }\n");
+        let err = published_ports(&dup).unwrap_err().to_string();
+        assert!(err.contains("host port 80 is published by both a and b"), "{err}");
+        let same = project("services:\n  a: { image: x, ports: ['80:80', '80:81'] }\n");
+        assert!(published_ports(&same).is_err());
+        // the same number over TCP and UDP is two different things
+        let mixed = project("services:\n  a: { image: x, ports: ['53:53', '53:53/udp'] }\n");
+        assert_eq!(published_ports(&mixed).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ports_are_formatted_for_listings() {
+        let p = project("services:\n  a: { image: x, ports: ['8080:80', '5353:53/udp'] }\n");
+        assert_eq!(format_ports(&p.services["a"].ports), "127.0.0.1:8080->80/tcp, 5353->53/udp (not published)");
+        assert_eq!(format_ports(&[]), "");
     }
 
     #[test]

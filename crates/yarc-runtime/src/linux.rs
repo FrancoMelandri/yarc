@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
-use nix::sched::{unshare, CloneFlags};
+use nix::sched::{setns, unshare, CloneFlags};
 use nix::sys::prctl;
 use nix::sys::signal::{sigaction, signal, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use nix::sys::wait::{waitpid, WaitStatus};
@@ -37,6 +37,7 @@ use crate::error::{Result, RuntimeError};
 use crate::paths::{resolve_executable, safe_join, safe_join_file};
 use crate::plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
 use crate::spec::{ContainerSpec, Network};
+use crate::network::ProjectNet;
 use crate::StartOptions;
 
 const FORWARDED: [Signal; 4] = [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP, Signal::SIGQUIT];
@@ -78,6 +79,12 @@ pub fn start(spec: &ContainerSpec, opts: StartOptions) -> Result<Running> {
     if spec.args.is_empty() {
         return Err(RuntimeError::NoCommand);
     }
+    // Resolve the project network *before* forking: a clear error, not a
+    // failure inside the helper processes.
+    let holder = match spec.network {
+        Network::Project => Some(holder_pid(spec)?),
+        _ => None,
+    };
     let StartOptions { debug, stdin, stdout, stderr } = opts;
     let stdio = Stdio { stdin, stdout, stderr };
     let plan = mount_plan(spec);
@@ -92,15 +99,41 @@ pub fn start(spec: &ContainerSpec, opts: StartOptions) -> Result<Running> {
         ForkResult::Child => {
             drop(up_r);
             drop(down_w);
-            monitor(spec, &plan, debug, File::from(up_w), File::from(down_r), stdio)
+            monitor(spec, &plan, debug, holder, File::from(up_w), File::from(down_r), stdio)
         }
         ForkResult::Parent { child } => {
             drop(up_w);
             drop(down_r);
             drop(stdio);
-            supervise(child, uid, gid, File::from(up_r), File::from(down_w))
+            // A project's user namespace was mapped by its holder already.
+            let maps = holder.is_none().then_some((uid, gid));
+            supervise(child, maps, File::from(up_r), File::from(down_w))
         }
     }
+}
+
+/// Host pid of the live holder of the container's project network.
+fn holder_pid(spec: &ContainerSpec) -> Result<u32> {
+    let dir = spec
+        .project_net
+        .as_ref()
+        .ok_or_else(|| RuntimeError::start("the container is in a project network but records no network directory"))?;
+    ProjectNet::from_dir(dir)
+        .alive_pid()?
+        .ok_or_else(|| RuntimeError::start("the project's network is not running; start the project with `yarc up`"))
+}
+
+/// Joins the user and network namespaces of the project's holder. Joining the
+/// user namespace needs a single-threaded caller (the monitor is a fresh fork)
+/// and is allowed because we own it (same uid as the holder).
+fn join_project_network(holder: u32) -> std::result::Result<(), String> {
+    let open = |name: &str| {
+        File::open(format!("/proc/{holder}/ns/{name}")).map_err(|e| format!("cannot open the {name} namespace of the project network: {e}"))
+    };
+    let (user, net) = (open("user")?, open("net")?);
+    // The user namespace first: it grants the right to join the network one.
+    setns(&user, CloneFlags::CLONE_NEWUSER).map_err(|e| format!("joining the project's user namespace: {e}"))?;
+    setns(&net, CloneFlags::CLONE_NEWNET).map_err(|e| format!("joining the project's network namespace: {e}"))
 }
 
 /// Descriptors that become the container's stdin/stdout/stderr (`None`: inherit).
@@ -179,7 +212,9 @@ impl Drop for SignalGuard {
     }
 }
 
-fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Result<Running> {
+/// `maps`: the (uid, gid) to map to root in the container's new user namespace;
+/// `None` when it joined an existing, already mapped one.
+fn supervise(monitor: Pid, maps: Option<(u32, u32)>, up: File, mut down: File) -> Result<Running> {
     TARGET.store(monitor.as_raw(), Ordering::SeqCst);
     let signals = SignalGuard::install();
     let mut init_pid = monitor.as_raw();
@@ -188,7 +223,11 @@ fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Resu
 
     match read_line(&mut up).as_deref() {
         Some("unshared") => {
-            let go = write_id_maps(monitor, uid, gid).and_then(|()| down.write_all(b"go\n"));
+            let mapped = match maps {
+                Some((uid, gid)) => write_id_maps(monitor, uid, gid),
+                None => Ok(()),
+            };
+            let go = mapped.and_then(|()| down.write_all(b"go\n"));
             if let Err(e) = go {
                 failure = Some((SETUP_FAILED, format!("cannot set up the user namespace: {e}")));
             }
@@ -274,7 +313,7 @@ pub(crate) fn exit(code: i32) -> ! {
     unsafe { nix::libc::_exit(code) }
 }
 
-fn monitor(spec: &ContainerSpec, plan: &[SetupOp], debug: bool, mut up: File, mut down: File, stdio: Stdio) -> ! {
+fn monitor(spec: &ContainerSpec, plan: &[SetupOp], debug: bool, holder: Option<u32>, mut up: File, mut down: File, stdio: Stdio) -> ! {
     // Terminal signals (Ctrl-C) reach the whole process group; only the
     // supervisor reacts to them, and it forwards them to the container.
     for sig in FORWARDED {
@@ -283,13 +322,21 @@ fn monitor(spec: &ContainerSpec, plan: &[SetupOp], debug: bool, mut up: File, mu
     }
     let _ = prctl::set_pdeathsig(Signal::SIGKILL);
 
-    let mut flags = CloneFlags::CLONE_NEWUSER
-        | CloneFlags::CLONE_NEWNS
-        | CloneFlags::CLONE_NEWPID
-        | CloneFlags::CLONE_NEWUTS
-        | CloneFlags::CLONE_NEWIPC;
-    if spec.network == Network::None {
-        flags |= CloneFlags::CLONE_NEWNET;
+    let mut flags = CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWIPC;
+    match holder {
+        // Join the project's user + network namespaces; the rest is ours, and
+        // owned by that user namespace.
+        Some(pid) => {
+            if let Err(msg) = join_project_network(pid) {
+                die(&mut up, SETUP_FAILED, &msg);
+            }
+        }
+        None => {
+            flags |= CloneFlags::CLONE_NEWUSER;
+            if spec.network == Network::None {
+                flags |= CloneFlags::CLONE_NEWNET;
+            }
+        }
     }
     if let Err(e) = unshare(flags) {
         die(&mut up, SETUP_FAILED, &format!("unshare: {e} (are unprivileged user namespaces enabled?)"));
@@ -475,7 +522,7 @@ fn write_file(root: &Path, rel: &str, bytes: &[u8]) -> std::result::Result<(), S
 }
 
 /// Brings `lo` up in a fresh network namespace (`--network none`).
-fn loopback_up() -> std::result::Result<(), String> {
+pub(crate) fn loopback_up() -> std::result::Result<(), String> {
     use nix::libc;
     // SAFETY: plain socket/ioctl calls on a zero-initialised `ifreq` we own.
     unsafe {

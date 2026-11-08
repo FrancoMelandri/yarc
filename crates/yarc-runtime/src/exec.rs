@@ -136,7 +136,7 @@ fn join_namespaces(spec: &ContainerSpec, pid: u32) -> std::result::Result<File, 
 
     let root = open("root directory", format!("/proc/{pid}/root"))?;
     let mut wanted = vec![("user", CloneFlags::CLONE_NEWUSER), ("mnt", CloneFlags::CLONE_NEWNS), ("uts", CloneFlags::CLONE_NEWUTS), ("ipc", CloneFlags::CLONE_NEWIPC)];
-    if spec.network == Network::None {
+    if spec.network != Network::Host {
         wanted.push(("net", CloneFlags::CLONE_NEWNET));
     }
     wanted.push(("pid", CloneFlags::CLONE_NEWPID));

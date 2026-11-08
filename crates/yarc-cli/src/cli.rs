@@ -46,6 +46,9 @@ pub enum Command {
     /// Internal: supervises one detached container
     #[command(name = "__shim", hide = true)]
     Shim(ShimArgs),
+    /// Internal: owns a project's network namespace and publishes its ports
+    #[command(name = "__holder", hide = true)]
+    Holder(HolderArgs),
     /// Work with containers (the same commands also work without `container`)
     #[command(subcommand)]
     Container(ContainerCommand),
@@ -102,6 +105,14 @@ pub struct PsArgs {
     /// Show all containers, not just running ones
     #[arg(short = 'a', long)]
     pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct HolderArgs {
+    pub project: String,
+    /// `HOST:CONTAINER` TCP port to publish on 127.0.0.1 (repeatable)
+    #[arg(long = "publish", value_name = "HOST:CONTAINER")]
+    pub publish: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -406,6 +417,14 @@ mod tests {
         assert!(!a.all);
         let Command::Ps(a) = parse(&["ps", "-a"]).unwrap().command else { panic!() };
         assert!(a.all);
+    }
+
+    #[test]
+    fn the_holder_command_exists_but_is_hidden() {
+        let Command::Holder(a) = parse(&["__holder", "demo", "--publish", "8080:80", "--publish", "9:9"]).unwrap().command else { panic!() };
+        assert_eq!((a.project.as_str(), a.publish.as_slice()), ("demo", &["8080:80".to_string(), "9:9".to_string()][..]));
+        use clap::CommandFactory;
+        assert!(!Cli::command().render_help().to_string().contains("__holder"));
     }
 
     #[test]

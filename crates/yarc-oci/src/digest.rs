@@ -25,6 +25,11 @@ impl Digest {
         Digest(encode_hex(&Sha256::digest(bytes)))
     }
 
+    /// Finish a streaming hash.
+    pub(crate) fn from_hasher(hasher: Sha256) -> Self {
+        Digest(encode_hex(&hasher.finalize()))
+    }
+
     pub fn hex(&self) -> &str {
         &self.0
     }

@@ -14,6 +14,10 @@ pub enum OciError {
     Json { what: String, msg: String },
     #[error("digest mismatch for {what}: expected {expected}, got {actual}")]
     DigestMismatch { what: String, expected: String, actual: String },
+    #[error("size mismatch for {what}: expected {expected} bytes, got {actual}")]
+    SizeMismatch { what: String, expected: u64, actual: u64 },
+    #[error("i/o error on {path}: {msg}")]
+    Io { path: String, msg: String },
     #[error("invalid digest '{0}'")]
     InvalidDigest(String),
     #[error("no image for platform {os}/{arch}")]

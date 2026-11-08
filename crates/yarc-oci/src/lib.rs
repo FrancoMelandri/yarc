@@ -10,12 +10,19 @@ pub mod client;
 pub mod digest;
 pub mod error;
 pub mod manifest;
+pub mod pull;
 pub mod reference;
+pub mod store;
 pub mod transport;
+
+#[cfg(test)]
+mod testutil;
 
 pub use client::{RegistryClient, ResolvedImage};
 pub use digest::Digest;
 pub use error::{OciError, Result};
 pub use manifest::{ContainerConfig, Descriptor, ImageConfig, ImageManifest, Platform};
+pub use pull::{pull, PullReport};
 pub use reference::{Reference, Target};
+pub use store::BlobStore;
 pub use transport::{Response, Transport, UreqTransport};

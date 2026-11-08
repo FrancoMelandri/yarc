@@ -11,3 +11,7 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 ureq = "3"
+
+[dev-dependencies]
+# also used by tests/live.rs
+tempfile = "3"

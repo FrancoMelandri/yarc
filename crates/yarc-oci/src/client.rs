@@ -21,8 +21,12 @@ pub struct ResolvedImage {
     pub reference: Reference,
     /// Digest of the platform-specific image manifest.
     pub manifest_digest: Digest,
+    /// Raw bytes of the platform manifest (what `manifest_digest` hashes).
+    pub manifest_bytes: Vec<u8>,
     pub manifest: ImageManifest,
     pub config_digest: Digest,
+    /// Raw bytes of the image config (what `config_digest` hashes).
+    pub config_bytes: Vec<u8>,
     pub config: ImageConfig,
 }
 
@@ -48,15 +52,15 @@ impl<T: Transport> RegistryClient<T> {
             Target::Tag(_) => Digest::of(&top_bytes),
         };
 
-        let (manifest_digest, manifest) = match parse_manifest(&top_bytes)? {
-            Manifest::Image(m) => (top_digest, m),
+        let (manifest_digest, manifest_bytes, manifest) = match parse_manifest(&top_bytes)? {
+            Manifest::Image(m) => (top_digest, top_bytes, m),
             Manifest::Index(index) => {
                 let chosen = select_platform(&index, platform)?;
                 let child_digest = Digest::parse(&chosen.digest)?;
                 let child_bytes = self.fetch_manifest(reference, &chosen.digest)?;
                 child_digest.verify(&child_bytes, "platform manifest")?;
                 match parse_manifest(&child_bytes)? {
-                    Manifest::Image(m) => (child_digest, m),
+                    Manifest::Image(m) => (child_digest, child_bytes, m),
                     Manifest::Index(_) => {
                         return Err(OciError::UnsupportedManifest("nested image index".into()))
                     }
@@ -73,10 +77,17 @@ impl<T: Transport> RegistryClient<T> {
         Ok(ResolvedImage {
             reference: reference.clone(),
             manifest_digest,
+            manifest_bytes,
             manifest,
             config_digest,
+            config_bytes,
             config,
         })
+    }
+
+    /// Open a blob for streaming. The caller must verify the digest of what it reads.
+    pub fn fetch_blob(&self, reference: &Reference, digest: &Digest) -> Result<Response> {
+        self.get(reference, &reference.blob_url(digest), &[])
     }
 
     fn fetch_manifest(&self, reference: &Reference, ref_or_digest: &str) -> Result<Vec<u8>> {
@@ -135,59 +146,11 @@ impl<T: Transport> RegistryClient<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, VecDeque};
-    use std::io::Cursor;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use super::*;
     use crate::manifest::{DOCKER_MANIFEST, OCI_INDEX, OCI_MANIFEST};
-
-    type Canned = (u16, Vec<(String, String)>, Vec<u8>);
-
-    /// Scripted transport: per-URL response queue (the last response repeats).
-    #[derive(Default)]
-    struct Fake {
-        routes: Mutex<HashMap<String, VecDeque<Canned>>>,
-        calls: Mutex<Vec<(String, Vec<(String, String)>)>>,
-    }
-
-    impl Fake {
-        fn route(&self, url: &str, status: u16, headers: &[(&str, &str)], body: impl Into<Vec<u8>>) {
-            let h = headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-            self.routes
-                .lock()
-                .unwrap()
-                .entry(url.into())
-                .or_default()
-                .push_back((status, h, body.into()));
-        }
-
-        fn auth_headers_for(&self, url_part: &str) -> Vec<Option<String>> {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(u, _)| u.contains(url_part))
-                .map(|(_, h)| h.iter().find(|(k, _)| k == "Authorization").map(|(_, v)| v.clone()))
-                .collect()
-        }
-    }
-
-    impl Transport for Fake {
-        fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<Response> {
-            self.calls.lock().unwrap().push((
-                url.into(),
-                headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            ));
-            let mut routes = self.routes.lock().unwrap();
-            let q = routes
-                .get_mut(url)
-                .unwrap_or_else(|| panic!("unexpected request: {url}"));
-            let (status, headers, body) =
-                if q.len() > 1 { q.pop_front().unwrap() } else { q.front().unwrap().clone() };
-            Ok(Response { status, headers, body: Box::new(Cursor::new(body)) })
-        }
-    }
+    use crate::testutil::Fake;
 
     const BASE: &str = "https://registry-1.docker.io/v2/library/alpine";
     const CHALLENGE: &str = r#"Bearer realm="https://auth.docker.io/token",service="registry.docker.io""#;

@@ -28,7 +28,7 @@ use std::os::fd::OwnedFd;
 pub use container::ContainerStore;
 pub use error::{Result, RuntimeError};
 #[cfg(target_os = "linux")]
-pub use lifecycle::{run_recorded, Launch};
+pub use lifecycle::{run_recorded, run_recorded_with, Launch};
 #[cfg(target_os = "linux")]
 pub use linux::{process_alive, start, Running};
 pub use logs::{format_timestamp, read_log, LogEntry, LogWriter, Stream};

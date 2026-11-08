@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod detached;
 mod root;
 
 use std::process::ExitCode;
@@ -39,7 +40,9 @@ fn run() -> Result<u8> {
         Command::Image(ImageCommand::Unpack(args)) => commands::unpack(&root, args).map(|()| 0),
         Command::Create(args) => commands::create(&root, args).map(|()| 0),
         Command::Container(ContainerCommand::Logs(args)) => commands::container_logs(&root, args).map(|()| 0),
-        Command::Container(ContainerCommand::Ls) => commands::container_ls(&root).map(|()| 0),
+        Command::Container(ContainerCommand::Ls) => commands::container_ls(&root, true).map(|()| 0),
+        Command::Ps(args) => commands::container_ls(&root, args.all).map(|()| 0),
+        Command::Shim(args) => detached::shim(&root, args).map(|()| 0),
         Command::Container(ContainerCommand::Rm(args)) => commands::container_rm(&root, args).map(|()| 0),
     }
 }

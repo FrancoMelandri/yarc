@@ -56,7 +56,17 @@ pub fn create(root: &Path, args: crate::cli::CreateArgs) -> Result<()> {
 /// container afterwards (whether or not it started). Returns yarc's exit code.
 pub fn run(root: &Path, args: crate::cli::RunArgs) -> Result<u8> {
     let id = create_container(root, args.create)?;
-    let started = container_start(root, crate::cli::StartArgs { id: id.clone(), debug: args.debug });
+    if args.detach {
+        // The shim removes the container itself when `--rm` is given and it exits.
+        let started = crate::detached::start(root, &id, args.debug, args.rm);
+        if started.is_err() && args.rm {
+            let _ = yarc_runtime::ContainerStore::open(root).and_then(|c| c.remove(&id));
+        }
+        started?;
+        println!("{id}");
+        return Ok(0);
+    }
+    let started = container_start(root, crate::cli::StartArgs { id: id.clone(), detach: false, debug: args.debug });
     if args.rm {
         // A failed cleanup must not hide the container's own result.
         if let Err(err) = yarc_runtime::ContainerStore::open(root).and_then(|c| c.remove(&id)) {
@@ -118,12 +128,15 @@ fn create_container(_root: &Path, _args: crate::cli::CreateArgs) -> Result<Strin
     anyhow::bail!("creating a container needs Linux; run yarc inside WSL")
 }
 
-pub fn container_ls(root: &Path) -> Result<()> {
+/// `container ls` (everything) and `ps` (running only unless `-a`).
+pub fn container_ls(root: &Path, all: bool) -> Result<()> {
     let containers = yarc_runtime::ContainerStore::open(root)?;
     println!("{:<14} {:<24} {:<12} COMMAND", "CONTAINER ID", "IMAGE", "STATUS");
     for c in containers.list()? {
         let status = containers.status_text(&c.id)?;
-        println!("{:<14} {:<24} {:<12} {}", c.id, c.image, status, c.args.join(" "));
+        if all || status == "Running" {
+            println!("{:<14} {:<24} {:<12} {}", c.id, c.image, status, c.args.join(" "));
+        }
     }
     Ok(())
 }
@@ -137,6 +150,11 @@ pub fn container_start(_root: &Path, _args: crate::cli::StartArgs) -> Result<u8>
 /// the result is yarc's exit code.
 #[cfg(target_os = "linux")]
 pub fn container_start(root: &Path, args: crate::cli::StartArgs) -> Result<u8> {
+    if args.detach {
+        crate::detached::start(root, &args.id, args.debug, false)?;
+        println!("{}", args.id);
+        return Ok(0);
+    }
     let containers = yarc_runtime::ContainerStore::open(root)?;
     let spec = containers.load(&args.id)?;
     if !spec.rootfs.is_dir() {

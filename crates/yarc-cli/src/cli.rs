@@ -24,11 +24,33 @@ pub enum Command {
     Image(ImageCommand),
     /// Create a container from an image without starting it (Linux only)
     Create(CreateArgs),
-    /// Create a container and run it in the foreground (Linux only)
+    /// Create a container and run it (Linux only)
     Run(RunArgs),
+    /// List running containers
+    Ps(PsArgs),
+    /// Internal: supervises one detached container
+    #[command(name = "__shim", hide = true)]
+    Shim(ShimArgs),
     /// Work with containers
     #[command(subcommand)]
     Container(ContainerCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct PsArgs {
+    /// Show all containers, not just running ones
+    #[arg(short = 'a', long)]
+    pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ShimArgs {
+    pub id: String,
+    #[arg(long)]
+    pub debug: bool,
+    /// Remove the container when it exits
+    #[arg(long)]
+    pub rm: bool,
 }
 
 #[derive(Debug, Args)]
@@ -36,6 +58,10 @@ pub struct RunArgs {
     /// Remove the container when it exits
     #[arg(long)]
     pub rm: bool,
+
+    /// Run in the background and print the container id
+    #[arg(short = 'd', long)]
+    pub detach: bool,
 
     /// Print the setup plan and skipped optional steps
     #[arg(long)]
@@ -95,6 +121,10 @@ pub enum ContainerCommand {
 pub struct StartArgs {
     /// Container id or name
     pub id: String,
+
+    /// Run in the background and print the container id
+    #[arg(short = 'd', long)]
+    pub detach: bool,
 
     /// Print the setup plan and skipped optional steps
     #[arg(long)]
@@ -236,9 +266,37 @@ mod tests {
     }
 
     #[test]
+    fn detach_flags_and_ps() {
+        let Command::Run(a) = parse(&["run", "-d", "--rm", "alpine", "echo", "-d"]).unwrap().command else { panic!() };
+        assert!(a.detach && a.rm);
+        assert_eq!(a.create.cmd, ["echo", "-d"], "flags after the command belong to the container");
+        // a command that itself starts with a dash needs `--`
+        let Command::Run(a) = parse(&["run", "alpine", "--", "-d"]).unwrap().command else { panic!() };
+        assert!(!a.detach);
+        assert_eq!(a.create.cmd, ["-d"]);
+        let Command::Run(a) = parse(&["run", "alpine"]).unwrap().command else { panic!() };
+        assert!(!a.detach);
+        let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "-d", "web"]).unwrap().command else { panic!() };
+        assert!(a.detach);
+        let Command::Ps(a) = parse(&["ps"]).unwrap().command else { panic!() };
+        assert!(!a.all);
+        let Command::Ps(a) = parse(&["ps", "-a"]).unwrap().command else { panic!() };
+        assert!(a.all);
+    }
+
+    #[test]
+    fn the_shim_command_exists_but_is_hidden() {
+        let Command::Shim(a) = parse(&["__shim", "web", "--rm", "--debug"]).unwrap().command else { panic!() };
+        assert_eq!((a.id.as_str(), a.rm, a.debug), ("web", true, true));
+        use clap::CommandFactory;
+        let help = Cli::command().render_help().to_string();
+        assert!(!help.contains("__shim"), "{help}");
+    }
+
+    #[test]
     fn container_start() {
         let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "web"]).unwrap().command else { panic!() };
-        assert_eq!((a.id.as_str(), a.debug), ("web", false));
+        assert_eq!((a.id.as_str(), a.debug, a.detach), ("web", false, false));
         let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "--debug", "web"]).unwrap().command else { panic!() };
         assert!(a.debug);
         assert!(parse(&["container", "start"]).is_err());

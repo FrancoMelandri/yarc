@@ -223,14 +223,133 @@ fn dead_and_already_running_containers_are_detected() {
         .unwrap();
     };
 
-    write_state(1); // pid 1 exists
+    write_state(1);
+    // A supervisor is whoever holds the container's lock; play that part here.
+    let lock = std::fs::OpenOptions::new().create(true).write(true).open(r.join("containers/d/lock")).unwrap();
+    lock.try_lock().unwrap();
     assert!(text(&yarc(r, &["container", "ls"]).stdout).contains("Running"));
-    let out = yarc(r, &["container", "start", "d"]);
-    assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("already running"), "{}", text(&out.stderr));
+    for args in [&["container", "start", "d"][..], &["container", "start", "-d", "d"][..]] {
+        let out = yarc(r, args);
+        assert!(!out.status.success());
+        assert!(text(&out.stderr).contains("already running"), "{}", text(&out.stderr));
+    }
+    drop(lock); // the supervisor "died"
 
-    write_state(4_000_000); // no such process
     assert!(text(&yarc(r, &["container", "ls"]).stdout).contains("Dead"));
     // a dead container can be started again
     assert_eq!(yarc(r, &["container", "start", "d"]).status.code(), Some(0));
+}
+
+fn ps(root: &std::path::Path, all: bool) -> String {
+    let args: &[&str] = if all { &["ps", "-a"] } else { &["ps"] };
+    text(&yarc(root, args).stdout)
+}
+
+/// Polls until `cond` holds (detached containers change state on their own).
+fn eventually(what: &str, mut cond: impl FnMut() -> bool) {
+    for _ in 0..100 {
+        if cond() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("timed out waiting for: {what}");
+}
+
+fn supervisor_pid(root: &std::path::Path, id: &str) -> String {
+    let state = std::fs::read_to_string(root.join("containers").join(id).join("state.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&state).unwrap();
+    v["supervisor_pid"].to_string()
+}
+
+#[test]
+#[ignore]
+fn a_detached_container_outlives_the_command_that_started_it() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    let started = std::time::Instant::now();
+    let out = yarc(r, &["run", "-d", "--name", "bg", IMAGE, "sh", "-c", "echo up; sleep 100"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout).trim(), "bg");
+    assert!(started.elapsed() < Duration::from_secs(20), "run -d must not wait for the container");
+
+    // yarc has exited, the container is still up and is listed
+    let listing = ps(r, false);
+    assert!(listing.contains("bg") && listing.contains("Running"), "{listing}");
+    eventually("the output to be recorded", || text(&yarc(r, &["container", "logs", "bg"]).stdout) == "up\n");
+
+    // stopping the shim (TERM, then a second one escalates) ends the container
+    let pid = supervisor_pid(r, "bg");
+    for _ in 0..2 {
+        Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    eventually("the container to exit", || ps(r, true).contains("Exited (137)"));
+    assert!(!ps(r, false).contains("bg"), "ps hides exited containers");
+}
+
+#[test]
+#[ignore]
+fn a_detached_container_that_finishes_is_recorded_and_can_be_started_again() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    yarc(r, &["create", "--name", "once", IMAGE, "sh", "-c", "echo hi; exit 2"]);
+    let out = yarc(r, &["container", "start", "-d", "once"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    eventually("exit", || ps(r, true).contains("Exited (2)"));
+    assert_eq!(text(&yarc(r, &["container", "logs", "once"]).stdout), "hi\n");
+    yarc(r, &["container", "start", "-d", "once"]);
+    eventually("second run", || text(&yarc(r, &["container", "logs", "once"]).stdout) == "hi\nhi\n");
+}
+
+#[test]
+#[ignore]
+fn a_detached_start_failure_is_reported_to_the_caller() {
+    let root = tempfile::tempdir().unwrap();
+    let out = yarc(root.path(), &["run", "-d", "--name", "bad", IMAGE, "no-such-program"]);
+    assert_eq!(out.status.code(), Some(127));
+    assert!(text(&out.stderr).contains("executable file not found"), "{}", text(&out.stderr));
+    assert!(ps(root.path(), true).contains("Exited (127)"));
+}
+
+#[test]
+#[ignore]
+fn detached_rm_removes_the_container_when_it_exits_or_fails_to_start() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    let out = yarc(r, &["run", "-d", "--rm", "--name", "tmp", IMAGE, "sh", "-c", "sleep 1; echo bye"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(ps(r, true).contains("tmp"));
+    eventually("removal", || !ps(r, true).contains("tmp"));
+
+    let out = yarc(r, &["run", "-d", "--rm", "--name", "nope", IMAGE, "no-such-program"]);
+    assert_eq!(out.status.code(), Some(127));
+    eventually("removal after a failed start", || !ps(r, true).contains("nope"));
+}
+
+#[test]
+#[ignore]
+fn starting_a_running_detached_container_again_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    assert_eq!(yarc(r, &["run", "-d", "--name", "s", IMAGE, "sleep", "100"]).status.code(), Some(0));
+    let again = yarc(r, &["container", "start", "-d", "s"]);
+    assert!(!again.status.success());
+    assert!(text(&again.stderr).contains("already running"), "{}", text(&again.stderr));
+    // clean up: kill the shim twice
+    let pid = supervisor_pid(r, "s");
+    for _ in 0..2 {
+        Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    eventually("exit", || ps(r, true).contains("Exited (137)"));
+}
+
+#[test]
+#[ignore]
+fn a_container_does_not_inherit_ignored_sigpipe() {
+    // With SIGPIPE ignored, `yes` would print "Broken pipe" errors instead of dying quietly.
+    let (code, out, err) = run_container(&[IMAGE, "sh", "-c", "yes 2>&1 | head -n 1; echo done"]);
+    assert_eq!(code, 0);
+    assert_eq!(out, "y\ndone\n", "stderr: {err}");
 }

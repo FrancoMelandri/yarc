@@ -323,6 +323,10 @@ fn init(spec: &ContainerSpec, plan: &[SetupOp], debug: bool, mut up: File, stdio
         // SAFETY: restoring the default disposition.
         let _ = unsafe { signal(sig, SigHandler::SigDfl) };
     }
+    // Rust starts programs with SIGPIPE ignored, and that would leak into the
+    // container: `yes | head` must die quietly, not fail with EPIPE.
+    // SAFETY: restoring the default disposition.
+    let _ = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) };
     let _ = prctl::set_pdeathsig(Signal::SIGKILL);
     if let Err(msg) = redirect(stdio) {
         die(&mut up, SETUP_FAILED, &msg);

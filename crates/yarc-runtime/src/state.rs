@@ -45,19 +45,20 @@ impl ContainerState {
         }
     }
 
-    /// True when the state says running and the supervisor is still there.
-    pub fn is_running(&self, alive: impl Fn(u32) -> bool) -> bool {
-        self.status == Status::Running && self.supervisor_pid.is_some_and(alive)
+    /// True when the state says running and a supervisor still holds the
+    /// container's lock (see `ContainerStore::is_supervised`).
+    pub fn is_running(&self, supervised: bool) -> bool {
+        self.status == Status::Running && supervised
     }
 }
 
 /// One-word-ish status for listings: `Created`, `Running`, `Exited (7)`,
-/// `Dead` (running on record, but its supervisor vanished).
-pub fn describe(state: Option<&ContainerState>, alive: impl Fn(u32) -> bool) -> String {
+/// `Dead` (running on record, but nobody supervises it any more).
+pub fn describe(state: Option<&ContainerState>, supervised: bool) -> String {
     match state {
         None => "Created".into(),
         Some(s) if s.status == Status::Exited => format!("Exited ({})", s.exit_code.unwrap_or(-1)),
-        Some(s) if s.is_running(alive) => "Running".into(),
+        Some(s) if s.is_running(supervised) => "Running".into(),
         Some(_) => "Dead".into(),
     }
 }
@@ -82,13 +83,11 @@ mod tests {
     #[test]
     fn descriptions() {
         let run = ContainerState::running(10, Some(11), 0);
-        assert_eq!(describe(None, |_| true), "Created");
-        assert_eq!(describe(Some(&run), |p| p == 10), "Running");
-        assert_eq!(describe(Some(&run), |_| false), "Dead");
-        assert_eq!(describe(Some(&run.exited(3, 1)), |_| false), "Exited (3)");
-        let mut no_supervisor = run;
-        no_supervisor.supervisor_pid = None;
-        assert_eq!(describe(Some(&no_supervisor), |_| true), "Dead");
+        assert_eq!(describe(None, true), "Created");
+        assert_eq!(describe(Some(&run), true), "Running");
+        assert_eq!(describe(Some(&run), false), "Dead");
+        assert_eq!(describe(Some(&run.exited(3, 1)), false), "Exited (3)");
+        assert_eq!(describe(Some(&run.exited(3, 1)), true), "Exited (3)");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! On-disk container records: `<root>/containers/<id>/{config.json, rootfs/}`.
 
 use std::collections::hash_map::RandomState;
-use std::fs;
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::hash::{BuildHasher, Hasher};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -94,7 +94,41 @@ impl ContainerStore {
 
     /// Listing status (`Created`, `Running`, `Exited (n)`, `Dead`).
     pub fn status_text(&self, id: &str) -> Result<String> {
-        Ok(describe(self.load_state(id)?.as_ref(), crate::process_alive))
+        let state = self.load_state(id)?;
+        let supervised = match &state {
+            Some(s) if s.status == crate::state::Status::Running => self.is_supervised(id)?,
+            _ => false,
+        };
+        Ok(describe(state.as_ref(), supervised))
+    }
+
+    pub fn lock_path(&self, id: &str) -> PathBuf {
+        self.container_dir(id).join("lock")
+    }
+
+    /// Takes the container's supervisor lock, or `None` if another process
+    /// holds it. The lock is an `flock` on `<container>/lock`: the kernel drops
+    /// it when its holder dies, so unlike a pid check it can neither go stale
+    /// nor be fooled by pid reuse, and it also makes "start twice" race-free.
+    /// Keep the returned file alive for as long as the container is supervised.
+    pub fn try_acquire(&self, id: &str) -> Result<Option<File>> {
+        check_id(id).map_err(|_| RuntimeError::NotFound(id.to_string()))?;
+        let path = self.lock_path(id);
+        let file = match OpenOptions::new().create(true).truncate(false).write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Err(RuntimeError::NotFound(id.to_string())),
+            Err(e) => return Err(RuntimeError::Io { context: format!("cannot open {}", path.display()), source: e }),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(e)) => Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e }),
+        }
+    }
+
+    /// True while some process holds the container's supervisor lock.
+    pub fn is_supervised(&self, id: &str) -> Result<bool> {
+        Ok(self.try_acquire(id)?.is_none())
     }
 
     pub fn load(&self, id: &str) -> Result<ContainerSpec> {
@@ -250,9 +284,27 @@ mod tests {
         let running = ContainerState::running(std::process::id(), Some(1), 10);
         store.save_state(&id, &running).unwrap();
         assert_eq!(store.load_state(&id).unwrap(), Some(running.clone()));
+        assert_eq!(store.status_text(&id).unwrap(), "Dead", "running on record but nobody holds the lock");
+        let lock = store.try_acquire(&id).unwrap().expect("free");
+        assert_eq!(store.status_text(&id).unwrap(), "Running");
+        drop(lock);
         store.save_state(&id, &running.exited(4, 20)).unwrap();
         assert_eq!(store.status_text(&id).unwrap(), "Exited (4)");
         assert!(matches!(store.load_state("../x"), Err(RuntimeError::NotFound(_))));
+    }
+
+    #[test]
+    fn the_supervisor_lock_is_exclusive_and_released_on_drop() {
+        let (_r, store) = store();
+        let id = store.allocate(Some("k")).unwrap();
+        assert!(!store.is_supervised(&id).unwrap());
+        let held = store.try_acquire(&id).unwrap().expect("first caller gets it");
+        assert!(store.try_acquire(&id).unwrap().is_none(), "second caller does not");
+        assert!(store.is_supervised(&id).unwrap());
+        drop(held);
+        assert!(!store.is_supervised(&id).unwrap());
+        assert!(matches!(store.try_acquire("missing"), Err(RuntimeError::NotFound(_))));
+        assert!(matches!(store.try_acquire("../x"), Err(RuntimeError::NotFound(_))));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::os::fd::OwnedFd;
 
 use crate::container::ContainerStore;
 use crate::error::{io_err, Result, RuntimeError};
-use crate::linux::{process_alive, start};
+use crate::linux::start;
 use crate::logs::LogWriter;
 use crate::pump::{pump, Tee};
 use crate::spec::ContainerSpec;
@@ -25,11 +25,23 @@ pub struct Launch {
 /// to `container.log`. Unless detached, output is also shown on yarc's own
 /// stdout/stderr and stdin is inherited. Returns the container's exit status.
 pub fn run_recorded(store: &ContainerStore, spec: &ContainerSpec, launch: &Launch) -> Result<i32> {
-    if let Some(state) = store.load_state(&spec.id)? {
-        if state.is_running(process_alive) {
-            return Err(RuntimeError::AlreadyRunning(spec.id.clone()));
-        }
-    }
+    run_recorded_with(store, spec, launch, |_| {})
+}
+
+/// Like [`run_recorded`], and calls `on_started` once the outcome of starting
+/// is known: `Ok(pid)` of the container's init, or the start error. It is not
+/// called when something fails before that (e.g. the container is already
+/// running). The detached shim uses it to tell the CLI "it's up".
+pub fn run_recorded_with(
+    store: &ContainerStore,
+    spec: &ContainerSpec,
+    launch: &Launch,
+    on_started: impl FnOnce(std::result::Result<u32, &RuntimeError>),
+) -> Result<i32> {
+    // Held until this function returns: "supervised" == "someone holds this".
+    let Some(_lock) = store.try_acquire(&spec.id)? else {
+        return Err(RuntimeError::AlreadyRunning(spec.id.clone()));
+    };
 
     let log_path = store.log_path(&spec.id);
     let log_file = OpenOptions::new()
@@ -64,6 +76,7 @@ pub fn run_recorded(store: &ContainerStore, spec: &ContainerSpec, launch: &Launc
                 _ => 125,
             };
             let _ = store.save_state(&spec.id, &starting.exited(code, now_ms()));
+            on_started(Err(&err));
             return Err(err);
         }
     };
@@ -73,6 +86,7 @@ pub fn run_recorded(store: &ContainerStore, spec: &ContainerSpec, launch: &Launc
         // Not fatal: the container is already running and must be waited for.
         eprintln!("warning: cannot record state of {}: {err}", spec.id);
     }
+    on_started(Ok(running.pid()));
 
     let tee = if launch.detached {
         Tee::default()

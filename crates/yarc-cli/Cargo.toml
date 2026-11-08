@@ -17,5 +17,9 @@ yarc-oci = { path = "../yarc-oci" }
 yarc-proto = { path = "../yarc-proto" }
 yarc-runtime = { path = "../yarc-runtime" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"

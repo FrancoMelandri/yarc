@@ -76,13 +76,43 @@ pub fn run(root: &Path, args: crate::cli::RunArgs) -> Result<u8> {
     started
 }
 
+/// Everything needed to create one container, whoever asks (`create`, `run`, `up`).
+#[cfg(unix)]
+pub struct NewContainer {
+    pub image: String,
+    pub name: Option<String>,
+    pub overrides: yarc_runtime::Overrides,
+    pub network: yarc_runtime::Network,
+    pub labels: std::collections::BTreeMap<String, String>,
+}
+
+#[cfg(unix)]
+fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
+    create_new(
+        root,
+        NewContainer {
+            image: args.image,
+            name: args.name,
+            overrides: yarc_runtime::Overrides {
+                entrypoint: args.entrypoint.map(|e| if e.is_empty() { vec![] } else { vec![e] }),
+                cmd: args.cmd,
+                env: args.env,
+                working_dir: args.workdir,
+                user: args.user,
+            },
+            network: args.network,
+            labels: Default::default(),
+        },
+    )
+}
+
 /// Creates a container record and its rootfs and returns its id. Pulls the
 /// image first when it is not in the local store.
 #[cfg(unix)]
-fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
-    use yarc_runtime::{resolve_process, ContainerSpec, ContainerStore, ImageDefaults, Overrides};
+pub fn create_new(root: &Path, new: NewContainer) -> Result<String> {
+    use yarc_runtime::{resolve_process, ContainerSpec, ContainerStore, ImageDefaults};
 
-    let reference: Reference = args.image.parse()?;
+    let reference: Reference = new.image.parse()?;
     let store = open_store(root)?;
     if store.get_ref(&reference)?.is_none() {
         eprintln!("{reference} is not in the local store, pulling it");
@@ -97,22 +127,15 @@ fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
         working_dir: cfg.working_dir.clone(),
         user: cfg.user.clone(),
     };
-    let overrides = Overrides {
-        entrypoint: args.entrypoint.as_ref().map(|e| if e.is_empty() { vec![] } else { vec![e.clone()] }),
-        cmd: args.cmd,
-        env: args.env,
-        working_dir: args.workdir,
-        user: args.user,
-    };
     // Fail on a bad command line before touching the disk.
-    let process = resolve_process(&defaults, &overrides)?;
+    let process = resolve_process(&defaults, &new.overrides)?;
 
     let containers = ContainerStore::open(root)?;
-    let id = containers.allocate(args.name.as_deref())?;
+    let id = containers.allocate(new.name.as_deref())?;
     let rootfs = containers.rootfs_path(&id);
     let built = (|| -> Result<()> {
         yarc_oci::unpack_image(&store, &reference, &rootfs)?;
-        let spec = ContainerSpec::new(&id, &args.image, rootfs.clone(), process, args.network);
+        let spec = ContainerSpec::new(&id, &new.image, rootfs.clone(), process, new.network).with_labels(new.labels);
         containers.save(&spec)?;
         Ok(())
     })();

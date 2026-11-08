@@ -13,6 +13,8 @@ pub struct Project {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Service {
     pub image: String,
+    /// Replaces the image's default command (like Docker's `CMD`); empty keeps it.
+    pub cmd: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub ports: Vec<PortMapping>,
     pub volumes: Vec<VolumeMount>,
@@ -77,6 +79,8 @@ pub(crate) struct RawProject {
 struct RawService {
     image: String,
     #[serde(default)]
+    cmd: Vec<String>,
+    #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
     ports: Vec<String>,
@@ -135,6 +139,7 @@ impl RawService {
             .transpose()?;
         Ok(Service {
             image: self.image,
+            cmd: self.cmd,
             env: self.env,
             ports,
             volumes,

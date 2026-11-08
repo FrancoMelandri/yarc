@@ -1,0 +1,653 @@
+//! Compose-style projects: `up`, `down` and `project ps|logs|stop|config`.
+//!
+//! A project is the set of containers labelled `yarc.project=<name>`; the
+//! containers of a service are named `<project>-<service>-1`. `up` is
+//! idempotent: a service whose container exists with the same definition hash
+//! (label `yarc.config-hash`) is left alone (or just started if it had stopped),
+//! a service whose definition changed is recreated.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use anyhow::{anyhow, bail, Context, Result};
+use yarc_config::{Condition, Project, Service};
+use yarc_oci::Digest;
+use yarc_runtime::{ContainerSpec, ContainerStore, RuntimeError};
+
+pub const LABEL_PROJECT: &str = "yarc.project";
+pub const LABEL_SERVICE: &str = "yarc.service";
+pub const LABEL_HASH: &str = "yarc.config-hash";
+
+const MAX_PROJECT_NAME: usize = 40;
+const MAX_CONTAINER_NAME: usize = 64;
+
+/// The global `--file` / `--project` options.
+#[derive(Debug, Clone)]
+pub struct Opts {
+    pub file: PathBuf,
+    pub name: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct Loaded {
+    pub name: String,
+    pub file: PathBuf,
+    pub project: Project,
+    /// Service names, dependencies first.
+    pub order: Vec<String>,
+}
+
+// ------------------------------------------------------------------ pure parts
+
+/// `My App!` → `my-app`. `None` when nothing usable is left.
+pub fn sanitize_project_name(raw: &str) -> Option<String> {
+    let mapped: String = raw
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '-' })
+        .collect();
+    let name: String = mapped.trim_start_matches(['-', '_']).chars().take(MAX_PROJECT_NAME).collect();
+    (!name.is_empty()).then_some(name)
+}
+
+pub fn validate_project_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let ok = name.len() <= MAX_PROJECT_NAME
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if ok {
+        Ok(())
+    } else {
+        bail!("invalid project name '{name}': use lowercase letters, digits, '_' and '-' (max {MAX_PROJECT_NAME}, starting with a letter or digit)")
+    }
+}
+
+pub fn container_name(project: &str, service: &str) -> String {
+    format!("{project}-{service}-1")
+}
+
+fn check_service_name(project: &str, service: &str) -> Result<()> {
+    let mut chars = service.chars();
+    let ok = chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    if !ok {
+        bail!("invalid service name '{service}': use letters, digits, '_', '.' and '-', starting with a letter or digit");
+    }
+    if container_name(project, service).len() > MAX_CONTAINER_NAME {
+        bail!("service name '{service}' is too long: '{}' would exceed {MAX_CONTAINER_NAME} characters", container_name(project, service));
+    }
+    Ok(())
+}
+
+/// Dependencies first; among services that are ready, alphabetical (so the
+/// order is deterministic). Configuration validation already rejects cycles.
+pub fn start_order(project: &Project) -> Result<Vec<String>> {
+    let mut remaining: BTreeMap<&str, Vec<&str>> = project
+        .services
+        .iter()
+        .map(|(name, svc)| (name.as_str(), svc.needs.keys().map(String::as_str).collect()))
+        .collect();
+    let mut order = Vec::new();
+    while let Some(next) = remaining
+        .iter()
+        .find(|(_, deps)| deps.iter().all(|d| !remaining.contains_key(d)))
+        .map(|(name, _)| *name)
+    {
+        remaining.remove(next);
+        order.push(next.to_string());
+    }
+    if remaining.is_empty() {
+        Ok(order)
+    } else {
+        bail!("dependency cycle between services: {}", remaining.keys().copied().collect::<Vec<_>>().join(", "))
+    }
+}
+
+/// Hash of everything that, when changed, requires a new container. `needs` is
+/// left out on purpose: it only affects start order.
+pub fn service_hash(service: &Service) -> String {
+    let canonical = format!(
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        service.image, service.cmd, service.env, service.ports, service.volumes, service.health
+    );
+    Digest::of(canonical.as_bytes()).hex().to_string()
+}
+
+pub fn labels(project: &str, service: &str, hash: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (LABEL_PROJECT.to_string(), project.to_string()),
+        (LABEL_SERVICE.to_string(), service.to_string()),
+        (LABEL_HASH.to_string(), hash.to_string()),
+    ])
+}
+
+/// Sorts a project's containers by the service order (`descending` for
+/// shutdown); containers of services that are no longer in the file ("orphans")
+/// come first when stopping and last otherwise.
+pub fn sort_by_service_order(specs: &mut [ContainerSpec], order: &[String], descending: bool) {
+    let position = |spec: &ContainerSpec| {
+        spec.labels.get(LABEL_SERVICE).and_then(|s| order.iter().position(|o| o == s))
+    };
+    specs.sort_by(|a, b| {
+        let (pa, pb) = (position(a), position(b));
+        let ord = match (pa, pb) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.id.cmp(&b.id),
+        };
+        if descending { ord.reverse() } else { ord }
+    });
+}
+
+// ------------------------------------------------------------------- loading
+
+pub fn project_name(opts: &Opts) -> Result<String> {
+    if let Some(name) = &opts.name {
+        validate_project_name(name)?;
+        return Ok(name.clone());
+    }
+    let file = std::path::absolute(&opts.file).with_context(|| format!("cannot resolve {}", opts.file.display()))?;
+    file.parent()
+        .and_then(Path::file_name)
+        .and_then(|n| n.to_str())
+        .and_then(sanitize_project_name)
+        .ok_or_else(|| anyhow!("cannot derive a project name from {}; pass --project", file.display()))
+}
+
+pub fn load(opts: &Opts) -> Result<Loaded> {
+    let name = project_name(opts)?;
+    let file = std::path::absolute(&opts.file).with_context(|| format!("cannot resolve {}", opts.file.display()))?;
+    let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read {}", file.display()))?;
+    let project = yarc_config::parse(&text).with_context(|| format!("{}", file.display()))?;
+    if project.services.is_empty() {
+        bail!("{} defines no services", file.display());
+    }
+    for service in project.services.keys() {
+        check_service_name(&name, service)?;
+    }
+    let order = start_order(&project)?;
+    Ok(Loaded { name, file, project, order })
+}
+
+pub fn project_containers(store: &ContainerStore, project: &str) -> Result<Vec<ContainerSpec>> {
+    Ok(store
+        .list()?
+        .into_iter()
+        .filter(|c| c.labels.get(LABEL_PROJECT).is_some_and(|p| p == project))
+        .collect())
+}
+
+/// Order for shutdown when the file may be gone: use it if it loads.
+fn shutdown_order(opts: &Opts) -> Vec<String> {
+    load(opts).map(|l| l.order).unwrap_or_default()
+}
+
+// ------------------------------------------------------- read-only commands
+
+pub fn config(opts: &Opts) -> Result<()> {
+    let loaded = load(opts)?;
+    println!("project: {}", loaded.name);
+    println!("file:    {}", loaded.file.display());
+    println!("services (start order):");
+    let width = loaded.order.iter().map(String::len).max().unwrap_or(0);
+    for name in &loaded.order {
+        let svc = &loaded.project.services[name];
+        let needs = if svc.needs.is_empty() {
+            String::new()
+        } else {
+            let list: Vec<String> = svc
+                .needs
+                .iter()
+                .map(|(d, c)| format!("{d}({})", if *c == Condition::Healthy { "healthy" } else { "started" }))
+                .collect();
+            format!("  needs: {}", list.join(", "))
+        };
+        println!("  {name:<width$}  {}  image {}{needs}", container_name(&loaded.name, name), svc.image);
+    }
+    Ok(())
+}
+
+pub fn ps(root: &Path, opts: &Opts) -> Result<()> {
+    let name = project_name(opts)?;
+    let store = ContainerStore::open(root)?;
+    let mut specs = project_containers(&store, &name)?;
+    sort_by_service_order(&mut specs, &shutdown_order(opts), false);
+    println!("{:<16} {:<28} {:<14} IMAGE", "SERVICE", "CONTAINER", "STATUS");
+    for spec in &specs {
+        let service = spec.labels.get(LABEL_SERVICE).map_or("-", String::as_str);
+        println!("{:<16} {:<28} {:<14} {}", service, spec.id, store.status_text(&spec.id)?, spec.image);
+    }
+    Ok(())
+}
+
+pub struct StreamOpts {
+    pub tail: Option<usize>,
+    pub timestamps: bool,
+    pub follow: bool,
+}
+
+/// One container's log, read from `offset` on.
+pub struct Source {
+    pub label: String,
+    pub id: String,
+    pub offset: u64,
+}
+
+/// Prints the logs of several containers, each line prefixed with its label,
+/// merged by timestamp. With `follow`, keeps going until none of the
+/// containers is running any more. Returns `true` if `interrupted` ended it.
+pub fn stream_logs(store: &ContainerStore, mut sources: Vec<Source>, opts: &StreamOpts, interrupted: &dyn Fn() -> bool) -> Result<bool> {
+    let width = sources.iter().map(|s| s.label.len()).max().unwrap_or(0);
+    let mut first = true;
+    loop {
+        let mut batch = Vec::new();
+        let mut any_running = false;
+        for src in &mut sources {
+            // Check the lock *before* reading: whatever a container wrote before
+            // it exited is then guaranteed to be in this read.
+            any_running |= store.is_supervised(&src.id)?;
+            let (entries, next) = yarc_runtime::read_log_from(&store.log_path(&src.id), src.offset)?;
+            src.offset = next;
+            let skip = match (first, opts.tail) {
+                (true, Some(n)) => entries.len().saturating_sub(n),
+                _ => 0,
+            };
+            batch.extend(entries.into_iter().skip(skip).map(|e| (src.label.clone(), e)));
+        }
+        batch.sort_by_key(|(_, e)| e.ts); // stable: ties keep the source order
+        for (label, entry) in &batch {
+            let line = if opts.timestamps {
+                format!("{label:<width$} | {} {}", yarc_runtime::format_timestamp(entry.ts), entry.line)
+            } else {
+                format!("{label:<width$} | {}", entry.line)
+            };
+            match entry.stream {
+                yarc_runtime::Stream::Stdout => println!("{line}"),
+                yarc_runtime::Stream::Stderr => eprintln!("{line}"),
+            }
+        }
+        first = false;
+        if !opts.follow || !any_running {
+            return Ok(false);
+        }
+        if interrupted() {
+            return Ok(true);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+pub fn logs(root: &Path, opts: &Opts, args: crate::cli::ProjectLogsArgs) -> Result<()> {
+    let name = project_name(opts)?;
+    let store = ContainerStore::open(root)?;
+    let mut specs = project_containers(&store, &name)?;
+    if specs.is_empty() {
+        bail!("project {name} has no containers; run `yarc up` first");
+    }
+    for wanted in &args.services {
+        if !specs.iter().any(|s| s.labels.get(LABEL_SERVICE) == Some(wanted)) {
+            bail!("project {name} has no service '{wanted}'");
+        }
+    }
+    if !args.services.is_empty() {
+        specs.retain(|s| s.labels.get(LABEL_SERVICE).is_some_and(|svc| args.services.contains(svc)));
+    }
+    sort_by_service_order(&mut specs, &shutdown_order(opts), false);
+    let sources = specs
+        .iter()
+        .map(|s| Source { label: s.labels.get(LABEL_SERVICE).cloned().unwrap_or_else(|| s.id.clone()), id: s.id.clone(), offset: 0 })
+        .collect();
+    let stream = StreamOpts { tail: args.tail, timestamps: args.timestamps, follow: args.follow };
+    stream_logs(&store, sources, &stream, &|| false)?;
+    Ok(())
+}
+
+// ------------------------------------------------------- commands needing Linux
+
+#[cfg(target_os = "linux")]
+mod interrupt {
+    //! Ctrl-C handling for the foreground `up`: a flag the log loop polls.
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static FLAG: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn handler(_: libc::c_int) {
+        FLAG.store(true, Ordering::SeqCst);
+    }
+
+    pub fn install() {
+        let handler = handler as *const () as libc::sighandler_t;
+        // SAFETY: the handler only stores to an atomic.
+        unsafe {
+            libc::signal(libc::SIGINT, handler);
+            libc::signal(libc::SIGTERM, handler);
+        }
+    }
+
+    pub fn requested() -> bool {
+        FLAG.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn log_len(store: &ContainerStore, id: &str) -> u64 {
+    std::fs::metadata(store.log_path(id)).map_or(0, |m| m.len())
+}
+
+#[cfg(target_os = "linux")]
+enum Action {
+    Create,
+    Start,
+    UpToDate,
+    Recreate,
+}
+
+/// Brings one service up; returns the log offset from which this run's output
+/// starts (so a foreground `up` does not replay earlier runs).
+#[cfg(target_os = "linux")]
+fn up_service(root: &Path, store: &ContainerStore, project: &str, service: &str, def: &Service) -> Result<u64> {
+    use crate::commands::{create_new, NewContainer};
+
+    let cname = container_name(project, service);
+    let hash = service_hash(def);
+    let action = match store.load(&cname) {
+        Ok(spec) if spec.labels.get(LABEL_HASH) == Some(&hash) => {
+            if store.is_supervised(&cname)? { Action::UpToDate } else { Action::Start }
+        }
+        Ok(_) => Action::Recreate,
+        Err(RuntimeError::NotFound(_)) => Action::Create,
+        Err(e) => return Err(e.into()),
+    };
+
+    if let Action::Recreate = action {
+        eprintln!("{service}: definition changed, recreating {cname}");
+        yarc_runtime::stop_container(store, &cname, Duration::from_secs(10))?;
+        yarc_runtime::remove_container(store, &cname, true)?;
+    }
+    if matches!(action, Action::Create | Action::Recreate) {
+        create_new(
+            root,
+            NewContainer {
+                image: def.image.clone(),
+                name: Some(cname.clone()),
+                overrides: yarc_runtime::Overrides {
+                    cmd: def.cmd.clone(),
+                    env: def.env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
+                    ..Default::default()
+                },
+                network: yarc_runtime::Network::Host,
+                labels: labels(project, service, &hash),
+            },
+        )?;
+    }
+    let offset = log_len(store, &cname);
+    match action {
+        Action::UpToDate => eprintln!("{service}: {cname} is up to date"),
+        Action::Start => {
+            crate::detached::start(root, &cname, false, false)?;
+            eprintln!("{service}: started {cname}");
+        }
+        Action::Create | Action::Recreate => {
+            crate::detached::start(root, &cname, false, false)?;
+            eprintln!("{service}: created and started {cname}");
+        }
+    }
+    Ok(offset)
+}
+
+/// Warns about parts of the file that are accepted but not implemented yet.
+#[cfg(target_os = "linux")]
+fn warn_unsupported(loaded: &Loaded) {
+    for name in &loaded.order {
+        let svc = &loaded.project.services[name];
+        if !svc.ports.is_empty() {
+            eprintln!("warning: {name}: ports are not published yet");
+        }
+        if !svc.volumes.is_empty() {
+            eprintln!("warning: {name}: volumes are not mounted yet");
+        }
+        if svc.health.is_some() {
+            eprintln!("warning: {name}: health checks do not run yet");
+        }
+        if svc.needs.values().any(|c| *c == Condition::Healthy) {
+            eprintln!("warning: {name}: `needs: healthy` is treated as `started` until health checks exist");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stop_all(store: &ContainerStore, specs: &[ContainerSpec], timeout: Duration) -> Result<()> {
+    for spec in specs {
+        yarc_runtime::stop_container(store, &spec.id, timeout)?;
+        eprintln!("{}: stopped", spec.id);
+    }
+    Ok(())
+}
+
+/// `yarc up`: returns the process exit code (130 when stopped with Ctrl-C).
+#[cfg(target_os = "linux")]
+pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
+    let loaded = load(opts)?;
+    let store = ContainerStore::open(root)?;
+    warn_unsupported(&loaded);
+    if !detach {
+        interrupt::install();
+    }
+
+    let mut sources = Vec::new();
+    for service in &loaded.order {
+        if !detach && interrupt::requested() {
+            break;
+        }
+        let offset = up_service(root, &store, &loaded.name, service, &loaded.project.services[service])
+            .with_context(|| format!("service {service}"))?;
+        sources.push(Source { label: service.clone(), id: container_name(&loaded.name, service), offset });
+    }
+    if detach {
+        return Ok(0);
+    }
+
+    let interrupted = interrupt::requested()
+        || stream_logs(&store, sources, &StreamOpts { tail: None, timestamps: false, follow: true }, &interrupt::requested)?;
+    if interrupted {
+        eprintln!("\nGracefully stopping...");
+        let mut specs = project_containers(&store, &loaded.name)?;
+        sort_by_service_order(&mut specs, &loaded.order, true);
+        stop_all(&store, &specs, Duration::from_secs(10))?;
+        return Ok(130);
+    }
+    Ok(0)
+}
+
+/// `yarc down`: stops and removes every container of the project, dependents
+/// first, including containers of services that were removed from the file.
+#[cfg(target_os = "linux")]
+pub fn down(root: &Path, opts: &Opts, timeout: Duration) -> Result<()> {
+    let name = project_name(opts)?;
+    let store = ContainerStore::open(root)?;
+    let mut specs = project_containers(&store, &name)?;
+    sort_by_service_order(&mut specs, &shutdown_order(opts), true);
+    if specs.is_empty() {
+        eprintln!("project {name}: nothing to remove");
+    }
+    for spec in &specs {
+        yarc_runtime::stop_container(&store, &spec.id, timeout)?;
+        yarc_runtime::remove_container(&store, &spec.id, true)?;
+        eprintln!("{}: stopped and removed", spec.id);
+    }
+    Ok(())
+}
+
+/// `yarc project stop`: like `down` but keeps the containers.
+#[cfg(target_os = "linux")]
+pub fn stop(root: &Path, opts: &Opts, timeout: Duration) -> Result<()> {
+    let name = project_name(opts)?;
+    let store = ContainerStore::open(root)?;
+    let mut specs = project_containers(&store, &name)?;
+    sort_by_service_order(&mut specs, &shutdown_order(opts), true);
+    stop_all(&store, &specs, timeout)
+}
+
+#[cfg(not(target_os = "linux"))]
+mod unsupported {
+    use std::path::Path;
+    use std::time::Duration;
+
+    use anyhow::Result;
+
+    use super::Opts;
+
+    const MSG: &str = "running projects needs Linux; run yarc inside WSL";
+
+    pub fn up(_root: &Path, _opts: &Opts, _detach: bool) -> Result<u8> {
+        anyhow::bail!(MSG)
+    }
+    pub fn down(_root: &Path, _opts: &Opts, _timeout: Duration) -> Result<()> {
+        anyhow::bail!(MSG)
+    }
+    pub fn stop(_root: &Path, _opts: &Opts, _timeout: Duration) -> Result<()> {
+        anyhow::bail!(MSG)
+    }
+}
+#[cfg(not(target_os = "linux"))]
+pub use unsupported::{down, stop, up};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project(yaml: &str) -> Project {
+        yarc_config::parse(yaml).unwrap()
+    }
+
+    #[test]
+    fn project_names_are_sanitized_or_validated() {
+        assert_eq!(sanitize_project_name("My App!").as_deref(), Some("my-app-"));
+        assert_eq!(sanitize_project_name("__demo").as_deref(), Some("demo"));
+        assert_eq!(sanitize_project_name("Web.Shop_2").as_deref(), Some("web-shop_2"));
+        assert_eq!(sanitize_project_name("---"), None);
+        assert_eq!(sanitize_project_name(""), None);
+        assert_eq!(sanitize_project_name(&"x".repeat(100)).unwrap().len(), MAX_PROJECT_NAME);
+
+        for ok in ["demo", "a", "0day", "my_app-2"] {
+            assert!(validate_project_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "Demo", "-x", "_x", "a b", "a/b", &"x".repeat(41)] {
+            assert!(validate_project_name(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn project_name_comes_from_the_option_or_the_directory() {
+        let opts = Opts { file: PathBuf::from("/work/My Shop/yarc.yaml"), name: None };
+        assert_eq!(project_name(&opts).unwrap(), "my-shop");
+        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("custom".into()) };
+        assert_eq!(project_name(&opts).unwrap(), "custom");
+        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("Bad Name".into()) };
+        assert!(project_name(&opts).is_err());
+    }
+
+    #[test]
+    fn container_and_service_names() {
+        assert_eq!(container_name("demo", "web"), "demo-web-1");
+        assert!(check_service_name("demo", "web.v2_x-1").is_ok());
+        assert!(check_service_name("demo", "-web").is_err());
+        assert!(check_service_name("demo", "we b").is_err());
+        assert!(check_service_name("demo", &"s".repeat(60)).is_err(), "container name would be too long");
+    }
+
+    #[test]
+    fn start_order_puts_dependencies_first_and_is_deterministic() {
+        let p = project(
+            "services:\n  web: { image: a, needs: { api: started, cache: started } }\n  api: { image: b, needs: { db: healthy } }\n  db: { image: c, health: { cmd: ok } }\n  cache: { image: d }\n  zeta: { image: e }\n",
+        );
+        let order = start_order(&p).unwrap();
+        assert_eq!(order, ["cache", "db", "api", "web", "zeta"]);
+        let pos = |s: &str| order.iter().position(|x| x == s).unwrap();
+        for (svc, deps) in [("web", vec!["api", "cache"]), ("api", vec!["db"])] {
+            for d in deps {
+                assert!(pos(d) < pos(svc), "{d} before {svc}");
+            }
+        }
+        assert_eq!(start_order(&p).unwrap(), order);
+    }
+
+    #[test]
+    fn independent_services_are_alphabetical() {
+        let p = project("services:\n  b: { image: x }\n  a: { image: x }\n  c: { image: x }\n");
+        assert_eq!(start_order(&p).unwrap(), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn the_hash_covers_the_definition_but_not_needs() {
+        let base = project("services:\n  db: { image: pg }\n  app: { image: x, env: { A: '1' }, ports: ['80:80'] }\n");
+        let app = &base.services["app"];
+        let h = service_hash(app);
+        assert_eq!(h, service_hash(&app.clone()));
+        assert_eq!(h.len(), 64);
+
+        let changed = |yaml: &str| service_hash(&project(yaml).services["app"]);
+        assert_ne!(h, changed("services:\n  app: { image: y, env: { A: '1' }, ports: ['80:80'] }\n"), "image");
+        assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '2' }, ports: ['80:80'] }\n"), "env");
+        assert_ne!(h, changed("services:\n  app: { image: x, cmd: [true], env: { A: '1' }, ports: ['80:80'] }\n"), "cmd");
+        assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['81:80'] }\n"), "ports");
+        assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['80:80'], volumes: ['v:/d'] }\n"), "volumes");
+        assert_ne!(
+            h,
+            changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['80:80'], health: { cmd: 'true' } }\n"),
+            "health"
+        );
+        let with_needs = changed("services:\n  db: { image: pg }\n  app: { image: x, env: { A: '1' }, ports: ['80:80'], needs: { db: started } }\n");
+        assert_eq!(h, with_needs, "needs only affects ordering");
+    }
+
+    fn spec(id: &str, service: Option<&str>) -> ContainerSpec {
+        let p = yarc_runtime::Process { args: vec!["x".into()], env: vec![], working_dir: "/".into(), user: None };
+        let mut s = ContainerSpec::new(id, "img", "/r".into(), p, yarc_runtime::Network::Host);
+        if let Some(svc) = service {
+            s.labels.insert(LABEL_SERVICE.into(), svc.into());
+        }
+        s
+    }
+
+    #[test]
+    fn containers_sort_by_service_order_with_orphans_at_the_other_end() {
+        let order: Vec<String> = ["db", "api", "web"].iter().map(|s| s.to_string()).collect();
+        let ids = |specs: &[ContainerSpec]| specs.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        let mut specs = vec![spec("w", Some("web")), spec("o", Some("old")), spec("d", Some("db")), spec("a", Some("api")), spec("u", None)];
+
+        sort_by_service_order(&mut specs, &order, false);
+        assert_eq!(ids(&specs), ["d", "a", "w", "o", "u"], "start order, orphans last");
+        sort_by_service_order(&mut specs, &order, true);
+        assert_eq!(ids(&specs), ["u", "o", "w", "a", "d"], "shutdown: orphans first, dependents before dependencies");
+    }
+
+    #[test]
+    fn labels_identify_project_service_and_definition() {
+        let l = labels("demo", "web", "abc");
+        assert_eq!(l[LABEL_PROJECT], "demo");
+        assert_eq!(l[LABEL_SERVICE], "web");
+        assert_eq!(l[LABEL_HASH], "abc");
+    }
+
+    #[test]
+    fn loading_checks_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("yarc.yaml");
+        let opts = Opts { file: file.clone(), name: Some("demo".into()) };
+        assert!(load(&opts).unwrap_err().to_string().contains("cannot read"));
+
+        std::fs::write(&file, "services: {}\n").unwrap();
+        assert!(format!("{:#}", load(&opts).unwrap_err()).contains("no services"));
+        std::fs::write(&file, "services:\n  a: { image: x, needs: { b: started } }\n").unwrap();
+        assert!(format!("{:#}", load(&opts).unwrap_err()).contains("unknown"), "validation errors are shown");
+        std::fs::write(&file, "services:\n  'bad name': { image: x }\n").unwrap();
+        assert!(load(&opts).unwrap_err().to_string().contains("invalid service name"));
+
+        std::fs::write(&file, "services:\n  db: { image: pg }\n  web: { image: nginx, needs: { db: started } }\n").unwrap();
+        let loaded = load(&opts).unwrap();
+        assert_eq!((loaded.name.as_str(), loaded.order.as_slice()), ("demo", &["db".to_string(), "web".to_string()][..]));
+    }
+}

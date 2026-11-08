@@ -11,6 +11,14 @@ pub struct Cli {
     #[arg(long, global = true, env = "YARC_ROOT", value_name = "DIR")]
     pub root: Option<PathBuf>,
 
+    /// Project file used by `up`, `down` and `project ...`
+    #[arg(long, global = true, env = "YARC_FILE", value_name = "FILE", default_value = "yarc.yaml")]
+    pub file: PathBuf,
+
+    /// Project name [default: the name of the directory holding the project file]
+    #[arg(short = 'p', long, global = true, value_name = "NAME")]
+    pub project: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -28,6 +36,13 @@ pub enum Command {
     Run(RunArgs),
     /// List running containers
     Ps(PsArgs),
+    /// Create and start all services of the project (Linux only)
+    Up(UpArgs),
+    /// Stop and remove all containers of the project (Linux only)
+    Down(DownArgs),
+    /// Inspect and control the project's services
+    #[command(subcommand)]
+    Project(ProjectCommand),
     /// Internal: supervises one detached container
     #[command(name = "__shim", hide = true)]
     Shim(ShimArgs),
@@ -36,6 +51,50 @@ pub enum Command {
     Container(ContainerCommand),
     #[command(flatten)]
     Direct(ContainerCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct UpArgs {
+    /// Return once everything is started instead of streaming logs
+    #[arg(short = 'd', long)]
+    pub detach: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DownArgs {
+    /// Seconds to wait after SIGTERM before sending SIGKILL
+    #[arg(short = 't', long, default_value_t = 10, value_name = "SECONDS")]
+    pub time: u64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProjectCommand {
+    /// List the project's containers
+    Ps,
+    /// Show the project's logs, prefixed with the service name
+    Logs(ProjectLogsArgs),
+    /// Stop the project's containers (without removing them)
+    Stop(DownArgs),
+    /// Print the resolved project: name, start order, container names
+    Config,
+}
+
+#[derive(Debug, Args)]
+pub struct ProjectLogsArgs {
+    /// Only these services [default: all]
+    pub services: Vec<String>,
+
+    /// Only the last N lines of each service
+    #[arg(long, value_name = "N")]
+    pub tail: Option<usize>,
+
+    /// Prefix each line with its timestamp
+    #[arg(short = 't', long)]
+    pub timestamps: bool,
+
+    /// Keep streaming until all containers have exited
+    #[arg(short = 'f', long)]
+    pub follow: bool,
 }
 
 #[derive(Debug, Args)]
@@ -354,6 +413,28 @@ mod tests {
         let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "--tail", "5", "-t", "web"]).unwrap().command else { panic!() };
         assert_eq!((a.tail, a.timestamps), (Some(5), true));
         assert!(parse(&["container", "logs", "--tail", "x", "web"]).is_err());
+    }
+
+    #[test]
+    fn project_commands_and_global_project_options() {
+        let cli = parse(&["up"]).unwrap();
+        assert_eq!((cli.file.as_path(), cli.project.as_deref()), (std::path::Path::new("yarc.yaml"), None));
+        let Command::Up(a) = cli.command else { panic!() };
+        assert!(!a.detach);
+        // global options work before and after the subcommand
+        let cli = parse(&["--file", "x.yaml", "-p", "demo", "up", "-d"]).unwrap();
+        assert_eq!((cli.file.as_path(), cli.project.as_deref()), (std::path::Path::new("x.yaml"), Some("demo")));
+        let cli = parse(&["down", "-t", "2", "--file", "y.yaml", "--project", "p2"]).unwrap();
+        assert_eq!((cli.file.as_path(), cli.project.as_deref()), (std::path::Path::new("y.yaml"), Some("p2")));
+        let Command::Down(a) = cli.command else { panic!() };
+        assert_eq!(a.time, 2);
+        assert!(matches!(parse(&["project", "ps"]).unwrap().command, Command::Project(ProjectCommand::Ps)));
+        assert!(matches!(parse(&["project", "config"]).unwrap().command, Command::Project(ProjectCommand::Config)));
+        let Command::Project(ProjectCommand::Stop(a)) = parse(&["project", "stop"]).unwrap().command else { panic!() };
+        assert_eq!(a.time, 10);
+        let Command::Project(ProjectCommand::Logs(a)) = parse(&["project", "logs", "-f", "-t", "--tail", "5", "web", "db"]).unwrap().command else { panic!() };
+        assert!(a.follow && a.timestamps);
+        assert_eq!((a.tail, a.services.as_slice()), (Some(5), &["web".to_string(), "db".to_string()][..]));
     }
 
     #[test]

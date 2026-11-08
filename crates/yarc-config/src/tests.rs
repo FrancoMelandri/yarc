@@ -131,3 +131,16 @@ fn detects_cycles() {
     let y = "services:\n  a:\n    image: x\n    needs: { b: started }\n  b:\n    image: y\n    needs: { c: started }\n  c:\n    image: z\n    needs: { a: started }\n";
     assert!(matches!(err(y), ConfigError::Cycle(_)));
 }
+
+#[test]
+fn cmd_is_a_list_of_arguments_and_optional() {
+    let p = parse("services:\n  a:\n    image: x\n    cmd: [sh, -c, 'echo hi; sleep 1']\n  b:\n    image: y\n").unwrap();
+    assert_eq!(p.services["a"].cmd, ["sh", "-c", "echo hi; sleep 1"]);
+    assert!(p.services["b"].cmd.is_empty());
+}
+
+#[test]
+fn cmd_must_be_a_list_not_a_string() {
+    let err = parse("services:\n  a:\n    image: x\n    cmd: 'echo hi'\n").unwrap_err();
+    assert!(matches!(err, ConfigError::Yaml(_)), "{err}");
+}

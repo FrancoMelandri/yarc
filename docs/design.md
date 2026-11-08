@@ -65,9 +65,18 @@ shim model applies. The host CLI invokes the in-VM agent per command.
 - **Images**: registry v2 over `reqwest`, token auth (Docker Hub), multi-arch index
   resolution, digest verification, tar+gzip layers with whiteouts, content-addressed store.
 - **Filesystem**: overlayfs (layers = lowerdirs, per-container upperdir).
-- **Networking**: per-project bridge, veth pairs, embedded DNS (service name → IP), port publishing;
-  forwarded host-side when running in a VM.
-- **Privileges**: rootful first (root in the VM on Win/macOS; sudo on Linux).
+- **Networking** (decided at M4): rootless, so one shared user+network namespace per project
+  (like a podman pod): services reach each other on `localhost`, service names resolve to
+  `127.0.0.1` through `/etc/hosts`, published ports go through a userspace TCP proxy
+  (bound to `127.0.0.1` by default); outbound traffic needs `pasta`/`slirp4netns` if installed.
+  The original idea (per-project bridge, veth pairs, embedded DNS, NAT) needs real root and moves
+  to the rootful agent.
+- **Privileges** (decided at M2): rootless first (user namespaces, a single uid mapped to 0);
+  rootful support, multi-uid maps and the agent running as root come later.
+- **Process model** (M3): no daemon. `yarc run -d` starts one shim (`yarc __shim <id>`, own session)
+  per container; the shim supervises it, holds its `flock` lock (the lock, not a pid, defines
+  "running") and records `state.json` and the JSON-lines log under `<root>/containers/<id>/`.
+  Control is by signals to the container's init plus those files.
 - **Platform**: arm64 images on Apple Silicon; virtiofs for bind mounts on macOS.
 
 ## `yarc.yaml` sketch
@@ -86,21 +95,26 @@ services:
 ```
 
 Principles: short keys, one way to write each thing, `needs` replaces `depends_on` conditions.
+`cmd` (a list of arguments, added in M4a) replaces the image's default command.
 
 ## CLI (v1)
-`up`, `down`, `ps`, `logs`, `exec`, `pull`, `restart`, `run`.
+Containers: `run`, `create`, `start`, `stop`, `kill`, `wait`, `ps`, `logs`, `rm`, `pull`.
+Projects: `up`, `down`, `project ps|logs|stop|config`; global `--file` / `--project`.
+Still to come: `exec`, `restart`.
 
 ## Milestones
-1. **M0** workspace + `yarc.yaml` parser.
-2. **M1** pull and unpack an image (any OS).
-3. **M2** run one container on native Linux (`yarc run alpine echo hi`).
-4. **M3** multi-service `up/down/ps/logs`: shim, networking, DNS, ports, volumes, health.
-5. **M4** Windows via WSL2.
-6. **M5** macOS via Virtualization.framework.
+1. **M0** workspace + `yarc.yaml` parser. ✔
+2. **M1** pull and unpack an image (any OS). ✔
+3. **M2** run one container on native Linux, rootless (`yarc run alpine echo hi`). ✔
+4. **M3** detached containers: shim, state, logs, `ps/logs/stop/kill/wait/rm`. ✔
+5. **M4** projects: `up/down/project ps|logs|stop|config` (a), exec + healthchecks (b),
+   project network, DNS and published ports (c), volumes (d).
+6. **M5** the agent and Windows via WSL2.
+7. **M6** macOS via Virtualization.framework.
 
 ## Dev environment
-Windows host; M1–M3 are developed and tested inside WSL2 (Ubuntu-24.04).
-Rust is not yet installed on this machine (neither Windows nor WSL).
+Windows host; everything up to M4 is developed and tested inside WSL2 (Ubuntu-24.04), with
+`CARGO_TARGET_DIR=~/yarc-target`. Progress notes per step are in `docs/progress/`.
 
 ## Open questions
 - Control protocol between CLI and agent/shims: JSON over unix socket vs gRPC.

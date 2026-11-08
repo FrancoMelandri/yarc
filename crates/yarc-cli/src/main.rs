@@ -2,15 +2,17 @@ mod cli;
 mod commands;
 mod control;
 mod detached;
+mod project;
 mod root;
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command, ContainerCommand, ImageCommand};
+use cli::{Cli, Command, ContainerCommand, ImageCommand, ProjectCommand};
 
 fn main() -> ExitCode {
     match run() {
@@ -35,6 +37,7 @@ fn run() -> Result<u8> {
         Some(r) => r,
         None => root::default_root()?,
     };
+    let opts = project::Opts { file: cli.file, name: cli.project };
     match cli.command {
         Command::Run(args) => commands::run(&root, args),
         Command::Pull(args) => commands::pull(&root, args).map(|()| 0),
@@ -42,6 +45,14 @@ fn run() -> Result<u8> {
         Command::Create(args) => commands::create(&root, args).map(|()| 0),
         Command::Ps(args) => commands::container_ls(&root, args.all).map(|()| 0),
         Command::Shim(args) => detached::shim(&root, args).map(|()| 0),
+        Command::Up(args) => project::up(&root, &opts, args.detach),
+        Command::Down(args) => project::down(&root, &opts, Duration::from_secs(args.time)).map(|()| 0),
+        Command::Project(cmd) => match cmd {
+            ProjectCommand::Ps => project::ps(&root, &opts).map(|()| 0),
+            ProjectCommand::Logs(args) => project::logs(&root, &opts, args).map(|()| 0),
+            ProjectCommand::Stop(args) => project::stop(&root, &opts, Duration::from_secs(args.time)).map(|()| 0),
+            ProjectCommand::Config => project::config(&opts).map(|()| 0),
+        },
         Command::Container(cmd) | Command::Direct(cmd) => container(&root, cmd),
     }
 }

@@ -1,6 +1,7 @@
 //! What to run: the container spec and how it is derived from image defaults
 //! plus user overrides (pure, no I/O).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -123,9 +124,17 @@ pub struct ContainerSpec {
     pub user: Option<String>,
     pub hostname: String,
     pub network: Network,
+    /// Free-form metadata, e.g. which project and service a container belongs to.
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 impl ContainerSpec {
+    pub fn with_labels(mut self, labels: BTreeMap<String, String>) -> Self {
+        self.labels = labels;
+        self
+    }
+
     pub fn new(id: &str, image: &str, rootfs: PathBuf, process: Process, network: Network) -> Self {
         ContainerSpec {
             id: id.to_string(),
@@ -137,6 +146,7 @@ impl ContainerSpec {
             user: process.user,
             hostname: id.chars().take(12).collect(),
             network,
+            labels: BTreeMap::new(),
         }
     }
 }
@@ -252,6 +262,20 @@ mod tests {
         assert_eq!("host".parse(), Ok(Network::Host));
         assert_eq!("none".parse(), Ok(Network::None));
         assert!("bridge".parse::<Network>().is_err());
+    }
+
+    #[test]
+    fn labels_roundtrip_and_old_configs_without_labels_still_load() {
+        let p = Process { args: s(&["x"]), env: vec![], working_dir: "/".into(), user: None };
+        let labels = BTreeMap::from([("yarc.project".to_string(), "demo".to_string())]);
+        let spec = ContainerSpec::new("c", "alpine", "/r".into(), p, Network::Host).with_labels(labels.clone());
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(serde_json::from_str::<ContainerSpec>(&json).unwrap().labels, labels);
+
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value.as_object_mut().unwrap().remove("labels");
+        let old: ContainerSpec = serde_json::from_value(value).unwrap();
+        assert!(old.labels.is_empty());
     }
 
     #[test]

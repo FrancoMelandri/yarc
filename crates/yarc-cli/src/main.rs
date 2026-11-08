@@ -14,7 +14,12 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(err) => {
             eprintln!("error: {err:#}");
-            ExitCode::FAILURE
+            // Docker-style status for a container that could not be started
+            // (127 command not found, 126 not executable, 125 other).
+            match err.downcast_ref::<yarc_runtime::RuntimeError>() {
+                Some(yarc_runtime::RuntimeError::Start { code, .. }) => ExitCode::from(*code as u8),
+                _ => ExitCode::FAILURE,
+            }
         }
     }
 }
@@ -28,6 +33,7 @@ fn run() -> Result<u8> {
         None => root::default_root()?,
     };
     match cli.command {
+        Command::Run(args) => commands::run(&root, args),
         Command::Container(ContainerCommand::Start(args)) => commands::container_start(&root, args),
         Command::Pull(args) => commands::pull(&root, args).map(|()| 0),
         Command::Image(ImageCommand::Unpack(args)) => commands::unpack(&root, args).map(|()| 0),

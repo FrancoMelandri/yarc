@@ -24,9 +24,25 @@ pub enum Command {
     Image(ImageCommand),
     /// Create a container from an image without starting it (Linux only)
     Create(CreateArgs),
+    /// Create a container and run it in the foreground (Linux only)
+    Run(RunArgs),
     /// Work with containers
     #[command(subcommand)]
     Container(ContainerCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Remove the container when it exits
+    #[arg(long)]
+    pub rm: bool,
+
+    /// Print the setup plan and skipped optional steps
+    #[arg(long)]
+    pub debug: bool,
+
+    #[command(flatten)]
+    pub create: CreateArgs,
 }
 
 #[derive(Debug, Args)]
@@ -183,6 +199,24 @@ mod tests {
         let Command::Container(ContainerCommand::Rm(a)) = parse(&["container", "rm", "a", "b"]).unwrap().command else { panic!() };
         assert_eq!(a.ids, ["a", "b"]);
         assert!(parse(&["container", "rm"]).is_err());
+    }
+
+    #[test]
+    fn run_takes_create_options_plus_rm_and_debug() {
+        let cli = parse(&["run", "--rm", "--debug", "--name", "web", "-e", "A=1", "alpine", "sh", "-c", "echo hi", "--rm"]).unwrap();
+        let Command::Run(a) = cli.command else { panic!() };
+        assert!(a.rm && a.debug);
+        assert_eq!((a.create.name.as_deref(), a.create.image.as_str()), (Some("web"), "alpine"));
+        assert_eq!(a.create.env, ["A=1"]);
+        // flags after the image belong to the container's command
+        assert_eq!(a.create.cmd, ["sh", "-c", "echo hi", "--rm"]);
+    }
+
+    #[test]
+    fn run_defaults_keep_the_container() {
+        let Command::Run(a) = parse(&["run", "alpine"]).unwrap().command else { panic!() };
+        assert!(!a.rm && !a.debug);
+        assert!(parse(&["run"]).is_err());
     }
 
     #[test]

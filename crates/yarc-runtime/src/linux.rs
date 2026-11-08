@@ -72,7 +72,19 @@ pub fn run(spec: &ContainerSpec, opts: &RunOptions) -> Result<i32> {
 }
 
 fn sys(what: &'static str) -> impl Fn(Errno) -> RuntimeError {
-    move |e| RuntimeError::Start(format!("{what}: {e}"))
+    move |e| RuntimeError::start(format!("{what}: {e}"))
+}
+
+/// A setup failure inside the container's init, with the exit status to report.
+struct Fail {
+    code: i32,
+    msg: String,
+}
+
+impl From<String> for Fail {
+    fn from(msg: String) -> Self {
+        Fail { code: SETUP_FAILED, msg }
+    }
 }
 
 // ---------------------------------------------------------------- supervisor
@@ -123,17 +135,17 @@ fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Resu
     TARGET.store(monitor.as_raw(), Ordering::SeqCst);
     let _signals = SignalGuard::install();
     let mut up = BufReader::new(up);
-    let mut failure: Option<String> = None;
+    let mut failure: Option<(i32, String)> = None;
 
     match read_line(&mut up).as_deref() {
         Some("unshared") => {
             let go = write_id_maps(monitor, uid, gid).and_then(|()| down.write_all(b"go\n"));
             if let Err(e) = go {
-                failure = Some(format!("cannot set up the user namespace: {e}"));
+                failure = Some((SETUP_FAILED, format!("cannot set up the user namespace: {e}")));
             }
         }
-        Some(line) => failure = Some(error_text(line)),
-        None => failure = Some("the container setup process died unexpectedly".into()),
+        Some(line) => failure = Some(parse_error(line)),
+        None => failure = Some((SETUP_FAILED, "the container setup process died unexpectedly".into())),
     }
     // Closing `down` without the "go" line tells the monitor to give up.
     drop(down);
@@ -143,14 +155,14 @@ fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Resu
             if let Some(pid) = line.strip_prefix("pid:").and_then(|p| p.parse::<i32>().ok()) {
                 TARGET.store(pid, Ordering::SeqCst);
             } else if line.starts_with("error:") {
-                failure = Some(error_text(&line));
+                failure = Some(parse_error(&line));
             }
         }
     }
 
     let code = wait_code(monitor);
     match failure {
-        Some(msg) => Err(RuntimeError::Start(msg)),
+        Some((code, msg)) => Err(RuntimeError::Start { msg, code }),
         None => Ok(code),
     }
 }
@@ -163,8 +175,13 @@ fn read_line(r: &mut impl BufRead) -> Option<String> {
     }
 }
 
-fn error_text(line: &str) -> String {
-    line.strip_prefix("error:").unwrap_or(line).to_string()
+/// `error:<code>:<message>` as written by `die`.
+fn parse_error(line: &str) -> (i32, String) {
+    let rest = line.strip_prefix("error:").unwrap_or(line);
+    match rest.split_once(':').and_then(|(c, m)| Some((c.parse().ok()?, m))) {
+        Some((code, msg)) => (code, msg.to_string()),
+        None => (SETUP_FAILED, rest.to_string()),
+    }
 }
 
 /// Maps the invoking user (and group) to 0 inside the new user namespace.
@@ -195,9 +212,9 @@ fn say(up: &mut File, line: &str) {
     let _ = up.write_all(line.as_bytes());
 }
 
-fn die(up: &mut File, msg: &str) -> ! {
-    say(up, &format!("error:{msg}"));
-    exit(SETUP_FAILED)
+fn die(up: &mut File, code: i32, msg: &str) -> ! {
+    say(up, &format!("error:{code}:{msg}"));
+    exit(code)
 }
 
 fn exit(code: i32) -> ! {
@@ -223,7 +240,7 @@ fn monitor(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions, mut up: Fi
         flags |= CloneFlags::CLONE_NEWNET;
     }
     if let Err(e) = unshare(flags) {
-        die(&mut up, &format!("unshare: {e} (are unprivileged user namespaces enabled?)"));
+        die(&mut up, SETUP_FAILED, &format!("unshare: {e} (are unprivileged user namespaces enabled?)"));
     }
     say(&mut up, "unshared");
 
@@ -235,7 +252,7 @@ fn monitor(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions, mut up: Fi
 
     // SAFETY: see `run`.
     match unsafe { fork() } {
-        Err(e) => die(&mut up, &format!("fork: {e}")),
+        Err(e) => die(&mut up, SETUP_FAILED, &format!("fork: {e}")),
         Ok(ForkResult::Child) => init(spec, plan, opts, up),
         Ok(ForkResult::Parent { child }) => {
             say(&mut up, &format!("pid:{}", child.as_raw()));
@@ -255,7 +272,7 @@ fn init(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions, mut up: File)
     }
     let _ = prctl::set_pdeathsig(Signal::SIGKILL);
     match setup_and_exec(spec, plan, opts) {
-        Err(msg) => die(&mut up, &msg),
+        Err(fail) => die(&mut up, fail.code, &fail.msg),
         Ok(never) => match never {},
     }
 }
@@ -264,7 +281,7 @@ fn ctx(what: &'static str) -> impl Fn(Errno) -> String {
     move |e| format!("{what}: {e}")
 }
 
-fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions) -> std::result::Result<Infallible, String> {
+fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions) -> std::result::Result<Infallible, Fail> {
     let root = spec.rootfs.as_path();
     let none: Option<&str> = None;
 
@@ -276,7 +293,7 @@ fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions) -> 
     for op in plan {
         if let Err(msg) = apply(root, op) {
             if !op.optional() {
-                return Err(msg);
+                return Err(msg.into());
             }
             if opts.debug {
                 eprintln!("yarc: warning: skipped optional setup step: {msg}");
@@ -303,13 +320,22 @@ fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions) -> 
 
     let to_c = |s: String| CString::new(s).map_err(|_| "command or environment contains a NUL byte".to_string());
     let path_var = spec.env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap_or("");
-    let program = resolve_executable(&spec.args[0], path_var, is_executable)
-        .ok_or_else(|| format!("executable file not found in $PATH: {}", spec.args[0]))?;
+    let not_found = || Fail { code: 127, msg: format!("executable file not found in $PATH: {}", spec.args[0]) };
+    let program = resolve_executable(&spec.args[0], path_var, is_executable).ok_or_else(not_found)?;
     let program = to_c(program.to_string_lossy().into_owned())?;
     let argv = spec.args.iter().map(|a| to_c(a.clone())).collect::<std::result::Result<Vec<_>, _>>()?;
     let envp = spec.env.iter().map(|(k, v)| to_c(format!("{k}={v}"))).collect::<std::result::Result<Vec<_>, _>>()?;
 
-    execve(&program, &argv, &envp).map_err(|e| format!("cannot execute {}: {e}", spec.args[0]))
+    let errno = match execve(&program, &argv, &envp) {
+        Err(e) => e,
+        Ok(never) => match never {},
+    };
+    let code = match errno {
+        Errno::ENOENT => 127,
+        Errno::EACCES | Errno::ENOEXEC => 126,
+        _ => SETUP_FAILED,
+    };
+    Err(Fail { code, msg: format!("cannot execute {}: {errno}", spec.args[0]) })
 }
 
 fn is_executable(path: &Path) -> bool {

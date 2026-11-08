@@ -46,10 +46,30 @@ pub fn pull(root: &Path, args: PullArgs) -> Result<()> {
     Ok(())
 }
 
-/// Creates a container record and its rootfs; prints the id. Pulls the image
-/// first when it is not in the local store.
+/// `yarc create`: prints the id of the new container.
+pub fn create(root: &Path, args: crate::cli::CreateArgs) -> Result<()> {
+    println!("{}", create_container(root, args)?);
+    Ok(())
+}
+
+/// `yarc run`: create, start in the foreground, and with `--rm` delete the
+/// container afterwards (whether or not it started). Returns yarc's exit code.
+pub fn run(root: &Path, args: crate::cli::RunArgs) -> Result<u8> {
+    let id = create_container(root, args.create)?;
+    let started = container_start(root, crate::cli::StartArgs { id: id.clone(), debug: args.debug });
+    if args.rm {
+        // A failed cleanup must not hide the container's own result.
+        if let Err(err) = yarc_runtime::ContainerStore::open(root).and_then(|c| c.remove(&id)) {
+            eprintln!("warning: could not remove container {id}: {err}");
+        }
+    }
+    started
+}
+
+/// Creates a container record and its rootfs and returns its id. Pulls the
+/// image first when it is not in the local store.
 #[cfg(unix)]
-pub fn create(root: &Path, args: CreateArgs) -> Result<()> {
+fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
     use yarc_runtime::{resolve_process, ContainerSpec, ContainerStore, ImageDefaults, Overrides};
 
     let reference: Reference = args.image.parse()?;
@@ -90,12 +110,11 @@ pub fn create(root: &Path, args: CreateArgs) -> Result<()> {
         let _ = containers.remove(&id); // don't leave a half-built container behind
         return Err(err);
     }
-    println!("{id}");
-    Ok(())
+    Ok(id)
 }
 
 #[cfg(not(unix))]
-pub fn create(_root: &Path, _args: crate::cli::CreateArgs) -> Result<()> {
+fn create_container(_root: &Path, _args: crate::cli::CreateArgs) -> Result<String> {
     anyhow::bail!("creating a container needs Linux; run yarc inside WSL")
 }
 

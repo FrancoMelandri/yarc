@@ -18,12 +18,21 @@ pub enum RuntimeError {
     Unsupported(String),
     #[error("refusing to use '{0}' inside the rootfs: it goes through a symlink or '..'")]
     UnsafePath(String),
-    #[error("cannot start container: {0}")]
-    Start(String),
+    /// The container could not be started. `code` is the exit status yarc
+    /// should use, as Docker does: 127 command not found, 126 not executable,
+    /// 125 anything else.
+    #[error("cannot start container: {msg}")]
+    Start { msg: String, code: i32 },
     #[error("{context}: {source}")]
     Io { context: String, source: std::io::Error },
     #[error("invalid container config {path}: {source}")]
     Json { path: PathBuf, source: serde_json::Error },
+}
+
+impl RuntimeError {
+    pub fn start(msg: impl Into<String>) -> Self {
+        RuntimeError::Start { msg: msg.into(), code: 125 }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;

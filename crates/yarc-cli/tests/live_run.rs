@@ -93,8 +93,42 @@ fn network_none_leaves_only_loopback() {
 #[ignore]
 fn a_missing_executable_is_reported_and_fails() {
     let (code, _, err) = run_container(&[IMAGE, "no-such-program"]);
-    assert_ne!(code, 0);
+    assert_eq!(code, 127, "{err}");
     assert!(err.contains("executable file not found"), "{err}");
+}
+
+#[test]
+#[ignore]
+fn a_file_that_is_not_executable_gives_126() {
+    // /etc/passwd exists but has no execute bit.
+    let (code, _, err) = run_container(&[IMAGE, "/etc/passwd"]);
+    assert_eq!(code, 126, "{err}");
+}
+
+#[test]
+#[ignore]
+fn run_executes_and_with_rm_leaves_nothing_behind() {
+    let root = tempfile::tempdir().unwrap();
+    let out = yarc(root.path(), &["run", "--rm", IMAGE, "sh", "-c", "echo hello; exit 3"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+    let ls = yarc(root.path(), &["container", "ls"]);
+    assert_eq!(String::from_utf8_lossy(&ls.stdout).lines().count(), 1, "only the header");
+}
+
+#[test]
+#[ignore]
+fn run_without_rm_keeps_the_container_and_with_rm_cleans_up_failed_starts() {
+    let root = tempfile::tempdir().unwrap();
+    let out = yarc(root.path(), &["run", "--name", "kept", IMAGE, "true"]);
+    assert_eq!(out.status.code(), Some(0));
+    let ls = String::from_utf8_lossy(&yarc(root.path(), &["container", "ls"]).stdout).into_owned();
+    assert!(ls.contains("kept"), "{ls}");
+
+    let out = yarc(root.path(), &["run", "--rm", "--name", "gone", IMAGE, "no-such-program"]);
+    assert_eq!(out.status.code(), Some(127));
+    let ls = String::from_utf8_lossy(&yarc(root.path(), &["container", "ls"]).stdout).into_owned();
+    assert!(!ls.contains("gone"), "{ls}");
 }
 
 #[test]

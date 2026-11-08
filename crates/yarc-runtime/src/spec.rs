@@ -111,6 +111,32 @@ fn split_env(entry: &str) -> Option<(String, String)> {
     (!k.is_empty()).then(|| (k.to_string(), v.to_string()))
 }
 
+pub const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_HEALTH_RETRIES: u32 = 3;
+
+/// A periodic check run *inside* the container; exit status 0 means healthy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HealthSpec {
+    pub cmd: Vec<String>,
+    pub interval_ms: u64,
+    /// A check running longer than this counts as a failure.
+    pub timeout_ms: u64,
+    /// Consecutive failures before the container is `unhealthy`.
+    pub retries: u32,
+}
+
+impl HealthSpec {
+    /// A shell command line (`sh -c`), with Docker's default timeout and retries.
+    pub fn shell(cmd: &str, interval: std::time::Duration) -> Self {
+        HealthSpec {
+            cmd: vec!["sh".into(), "-c".into(), cmd.into()],
+            interval_ms: interval.as_millis() as u64,
+            timeout_ms: DEFAULT_HEALTH_TIMEOUT_MS,
+            retries: DEFAULT_HEALTH_RETRIES,
+        }
+    }
+}
+
 /// Everything needed to start one container; persisted as `config.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerSpec {
@@ -127,11 +153,18 @@ pub struct ContainerSpec {
     /// Free-form metadata, e.g. which project and service a container belongs to.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub health: Option<HealthSpec>,
 }
 
 impl ContainerSpec {
     pub fn with_labels(mut self, labels: BTreeMap<String, String>) -> Self {
         self.labels = labels;
+        self
+    }
+
+    pub fn with_health(mut self, health: Option<HealthSpec>) -> Self {
+        self.health = health;
         self
     }
 
@@ -147,6 +180,7 @@ impl ContainerSpec {
             hostname: id.chars().take(12).collect(),
             network,
             labels: BTreeMap::new(),
+            health: None,
         }
     }
 }
@@ -276,6 +310,21 @@ mod tests {
         value.as_object_mut().unwrap().remove("labels");
         let old: ContainerSpec = serde_json::from_value(value).unwrap();
         assert!(old.labels.is_empty());
+    }
+
+    #[test]
+    fn health_spec_roundtrips_and_is_optional_in_old_configs() {
+        let p = Process { args: s(&["x"]), env: vec![], working_dir: "/".into(), user: None };
+        let health = HealthSpec::shell("pg_isready -q", std::time::Duration::from_millis(1500));
+        assert_eq!(health.cmd, ["sh", "-c", "pg_isready -q"]);
+        assert_eq!((health.interval_ms, health.timeout_ms, health.retries), (1500, 30_000, 3));
+        let spec = ContainerSpec::new("c", "img", "/r".into(), p, Network::Host).with_health(Some(health.clone()));
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(serde_json::from_str::<ContainerSpec>(&json).unwrap().health, Some(health));
+
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value.as_object_mut().unwrap().remove("health");
+        assert_eq!(serde_json::from_value::<ContainerSpec>(value).unwrap().health, None);
     }
 
     #[test]

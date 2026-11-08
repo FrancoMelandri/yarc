@@ -84,6 +84,7 @@ pub struct NewContainer {
     pub overrides: yarc_runtime::Overrides,
     pub network: yarc_runtime::Network,
     pub labels: std::collections::BTreeMap<String, String>,
+    pub health: Option<yarc_runtime::HealthSpec>,
 }
 
 #[cfg(unix)]
@@ -102,6 +103,7 @@ fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
             },
             network: args.network,
             labels: Default::default(),
+            health: None,
         },
     )
 }
@@ -135,7 +137,7 @@ pub fn create_new(root: &Path, new: NewContainer) -> Result<String> {
     let rootfs = containers.rootfs_path(&id);
     let built = (|| -> Result<()> {
         yarc_oci::unpack_image(&store, &reference, &rootfs)?;
-        let spec = ContainerSpec::new(&id, &new.image, rootfs.clone(), process, new.network).with_labels(new.labels);
+        let spec = ContainerSpec::new(&id, &new.image, rootfs.clone(), process, new.network).with_labels(new.labels).with_health(new.health);
         containers.save(&spec)?;
         Ok(())
     })();
@@ -157,7 +159,7 @@ pub fn container_ls(root: &Path, all: bool) -> Result<()> {
     println!("{:<14} {:<24} {:<12} COMMAND", "CONTAINER ID", "IMAGE", "STATUS");
     for c in containers.list()? {
         let status = containers.status_text(&c.id)?;
-        if all || status == "Running" {
+        if all || status.starts_with("Running") {
             println!("{:<14} {:<24} {:<12} {}", c.id, c.image, status, c.args.join(" "));
         }
     }

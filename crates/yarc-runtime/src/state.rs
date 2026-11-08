@@ -11,6 +11,34 @@ pub enum Status {
     Exited,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HealthStatus {
+    /// No check has succeeded yet.
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+impl HealthStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HealthStatus::Starting => "starting",
+            HealthStatus::Healthy => "healthy",
+            HealthStatus::Unhealthy => "unhealthy",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Health {
+    pub status: HealthStatus,
+    /// Consecutive failed checks.
+    pub failing_streak: u32,
+    pub last_exit: Option<i32>,
+    pub last_check_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContainerState {
     pub status: Status,
@@ -22,6 +50,9 @@ pub struct ContainerState {
     pub started_ms: u64,
     pub finished_ms: Option<u64>,
     pub exit_code: Option<i32>,
+    /// Only for containers with a health check, and only while they run.
+    #[serde(default)]
+    pub health: Option<Health>,
 }
 
 impl ContainerState {
@@ -33,7 +64,12 @@ impl ContainerState {
             started_ms,
             finished_ms: None,
             exit_code: None,
+            health: None,
         }
+    }
+
+    pub fn with_health(&self, health: Option<Health>) -> Self {
+        ContainerState { health, ..self.clone() }
     }
 
     pub fn exited(&self, exit_code: i32, finished_ms: u64) -> Self {
@@ -41,6 +77,7 @@ impl ContainerState {
             status: Status::Exited,
             exit_code: Some(exit_code),
             finished_ms: Some(finished_ms),
+            health: None,
             ..self.clone()
         }
     }
@@ -58,7 +95,10 @@ pub fn describe(state: Option<&ContainerState>, supervised: bool) -> String {
     match state {
         None => "Created".into(),
         Some(s) if s.status == Status::Exited => format!("Exited ({})", s.exit_code.unwrap_or(-1)),
-        Some(s) if s.is_running(supervised) => "Running".into(),
+        Some(s) if s.is_running(supervised) => match &s.health {
+            Some(h) => format!("Running ({})", h.status.as_str()),
+            None => "Running".into(),
+        },
         Some(_) => "Dead".into(),
     }
 }
@@ -88,6 +128,28 @@ mod tests {
         assert_eq!(describe(Some(&run), false), "Dead");
         assert_eq!(describe(Some(&run.exited(3, 1)), false), "Exited (3)");
         assert_eq!(describe(Some(&run.exited(3, 1)), true), "Exited (3)");
+    }
+
+    #[test]
+    fn health_is_shown_while_running_and_dropped_on_exit() {
+        let health = Health { status: HealthStatus::Healthy, failing_streak: 0, last_exit: Some(0), last_check_ms: Some(5) };
+        let run = ContainerState::running(10, Some(11), 0).with_health(Some(health));
+        assert_eq!(describe(Some(&run), true), "Running (healthy)");
+        assert_eq!(describe(Some(&run), false), "Dead");
+        let starting = run.with_health(Some(Health { status: HealthStatus::Starting, failing_streak: 0, last_exit: None, last_check_ms: None }));
+        assert_eq!(describe(Some(&starting), true), "Running (starting)");
+        let unhealthy = run.with_health(Some(Health { status: HealthStatus::Unhealthy, failing_streak: 3, last_exit: Some(1), last_check_ms: Some(9) }));
+        assert_eq!(describe(Some(&unhealthy), true), "Running (unhealthy)");
+        let done = unhealthy.exited(0, 20);
+        assert_eq!(done.health, None);
+        assert_eq!(describe(Some(&done), false), "Exited (0)");
+    }
+
+    #[test]
+    fn old_state_files_without_health_still_load() {
+        let json = r#"{"status":"running","supervisor_pid":1,"pid":2,"started_ms":3,"finished_ms":null,"exit_code":null}"#;
+        let s: ContainerState = serde_json::from_str(json).unwrap();
+        assert_eq!(s.health, None);
     }
 
     #[test]

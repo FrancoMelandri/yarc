@@ -210,3 +210,65 @@ fn two_projects_can_use_the_same_service_names() {
     assert_eq!(text(&other.stdout).lines().count(), 1, "'other' has no containers");
     let _ = Path::new("");
 }
+
+fn health_project(db_ready_after_secs: u32, check: &str) -> String {
+    format!(
+        "services:\n  db:\n    image: alpine:3.20\n    cmd: [sh, -c, \"sleep {db_ready_after_secs}; touch /tmp/ready; {TRAPPING}\"]\n    health: {{ cmd: \"{check}\", interval: 1s }}\n  web:\n    image: alpine:3.20\n    cmd: [sh, -c, \"echo web up; {TRAPPING}\"]\n    needs: {{ db: healthy }}\n"
+    )
+}
+
+#[test]
+#[ignore]
+fn needs_healthy_waits_until_the_check_passes() {
+    let p = Proj::new(&health_project(3, "echo checked >> /tmp/checks; test -f /tmp/ready"));
+    let out = p.yarc(&["up", "-d"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("waiting for db to become healthy"), "{}", text(&out.stderr));
+
+    let ps = p.ps();
+    assert!(ps.contains("Running (healthy)"), "{ps}");
+    let gap = p.started_ms("demo-web-1") - p.started_ms("demo-db-1");
+    assert!(gap >= 3_000, "web started only {gap} ms after db, before the check could pass");
+
+    // the check really runs periodically inside the container
+    eventually("several checks", || {
+        text(&p.yarc(&["exec", "demo-db-1", "cat", "/tmp/checks"]).stdout).lines().count() >= 4
+    });
+}
+
+#[test]
+#[ignore]
+fn a_container_is_starting_until_its_first_check_passes() {
+    let p = Proj::new("services:\n  db:\n    image: alpine:3.20\n    cmd: [sh, -c, \"sleep 3; touch /tmp/ready; trap 'exit 0' TERM; while true; do sleep 0.2; done\"]\n    health: { cmd: \"test -f /tmp/ready\", interval: 1s }\n");
+    assert_eq!(p.yarc(&["up", "-d"]).status.code(), Some(0));
+    assert!(p.ps().contains("Running (starting)"), "{}", p.ps());
+    eventually("healthy", || p.ps().contains("Running (healthy)"));
+    // `ps` without -a lists it too
+    let running = text(&Command::new(env!("CARGO_BIN_EXE_yarc")).arg("--root").arg(p.root.path()).arg("ps").output().unwrap().stdout);
+    assert!(running.contains("demo-db-1"), "{running}");
+}
+
+#[test]
+#[ignore]
+fn an_unhealthy_dependency_stops_up() {
+    let p = Proj::new(&health_project(0, "false"));
+    let started = Instant::now();
+    let out = p.yarc(&["up", "-d"]);
+    assert!(!out.status.success());
+    let err = text(&out.stderr);
+    assert!(err.contains("db is unhealthy") && err.contains("service web"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert!(p.ps().contains("Running (unhealthy)"), "{}", p.ps());
+    assert!(!p.ps().contains("web"), "web must not have been created: {}", p.ps());
+}
+
+#[test]
+#[ignore]
+fn a_dependency_that_exits_before_it_is_healthy_is_reported() {
+    let p = Proj::new(
+        "services:\n  db:\n    image: alpine:3.20\n    cmd: [sh, -c, 'exit 4']\n    health: { cmd: 'false', interval: 1s }\n  web:\n    image: alpine:3.20\n    cmd: [sh, -c, 'echo never']\n    needs: { db: healthy }\n",
+    );
+    let out = p.yarc(&["up", "-d"]);
+    assert!(!out.status.success());
+    assert!(text(&out.stderr).contains("exited (status 4)"), "{}", text(&out.stderr));
+}

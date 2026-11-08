@@ -61,6 +61,7 @@ fn container(root: &Path, cmd: ContainerCommand) -> Result<u8> {
     match cmd {
         ContainerCommand::Ls => commands::container_ls(root, true).map(|()| 0),
         ContainerCommand::Start(args) => commands::container_start(root, args),
+        ContainerCommand::Exec(args) => control::exec(root, args),
         ContainerCommand::Stop(args) => control::stop(root, args).map(|()| 0),
         ContainerCommand::Kill(args) => control::kill(root, args).map(|()| 0),
         ContainerCommand::Wait(args) => control::wait(root, args).map(|()| 0),

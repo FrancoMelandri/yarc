@@ -4,6 +4,7 @@
 use std::fs::File;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
+use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
@@ -23,21 +24,47 @@ pub struct Tee {
 /// log is line-framed. A failing tee (closed terminal) is dropped silently; a
 /// failing log is reported at the end, after all output has been drained so the
 /// container never blocks on a full pipe.
-pub fn pump<W: Write>(stdout: OwnedFd, stderr: OwnedFd, log: &mut LogWriter<W>, mut tee: Tee) -> io::Result<()> {
+pub fn pump<W: Write>(stdout: OwnedFd, stderr: OwnedFd, log: &mut LogWriter<W>, tee: Tee) -> io::Result<()> {
+    pump_with_tick(stdout, stderr, log, tee, None)
+}
+
+/// A callback run roughly every `every` while output is being pumped (used to
+/// drive health checks without a second thread).
+pub struct Tick<'a> {
+    pub every: Duration,
+    pub run: &'a mut dyn FnMut(),
+}
+
+/// [`pump`] that also calls `tick` periodically, whether or not output arrives.
+pub fn pump_with_tick<W: Write>(
+    stdout: OwnedFd,
+    stderr: OwnedFd,
+    log: &mut LogWriter<W>,
+    mut tee: Tee,
+    mut tick: Option<Tick<'_>>,
+) -> io::Result<()> {
     let mut streams = vec![(Stream::Stdout, File::from(stdout)), (Stream::Stderr, File::from(stderr))];
     let mut buf = [0u8; 8192];
     let mut log_error: Option<io::Error> = None;
+    let mut last_tick = Instant::now();
+    let timeout = tick.as_ref().map_or(PollTimeout::NONE, |t| PollTimeout::from(t.every.as_millis().clamp(1, u16::MAX as u128) as u16));
 
     while !streams.is_empty() {
         let ready: Vec<bool> = {
             let mut fds: Vec<PollFd> = streams.iter().map(|(_, f)| PollFd::new(f.as_fd(), PollFlags::POLLIN)).collect();
-            match poll(&mut fds, PollTimeout::NONE) {
+            match poll(&mut fds, timeout) {
                 Ok(_) => {}
-                Err(Errno::EINTR) => continue,
+                Err(Errno::EINTR) => {}
                 Err(e) => return Err(io::Error::from(e)),
             }
             fds.iter().map(|p| p.revents().is_some_and(|r| !r.is_empty())).collect()
         };
+        if let Some(t) = tick.as_mut() {
+            if last_tick.elapsed() >= t.every {
+                (t.run)();
+                last_tick = Instant::now();
+            }
+        }
 
         let mut closed = Vec::new();
         for (i, (stream, file)) in streams.iter_mut().enumerate() {
@@ -157,6 +184,23 @@ mod tests {
         writer.join().unwrap();
         let lines: Vec<_> = log.entries().into_iter().map(|(_, l)| l).collect();
         assert_eq!(lines, ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn the_tick_runs_while_the_container_is_silent() {
+        let (out_r, out_w) = pipe();
+        let (err_r, err_w) = pipe();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop((out_w, err_w));
+        });
+        let mut ticks = 0;
+        let mut count = || ticks += 1;
+        let tick = Tick { every: Duration::from_millis(100), run: &mut count };
+        let log = Shared::default();
+        pump_with_tick(out_r, err_r, &mut LogWriter::new(log), Tee::default(), Some(tick)).unwrap();
+        closer.join().unwrap();
+        assert!((3..=6).contains(&ticks), "ticked {ticks} times in ~500 ms at 100 ms");
     }
 
     #[test]

@@ -496,3 +496,43 @@ fn the_whole_lifecycle_with_unprefixed_commands() {
     assert_eq!(yarc(r, &["rm", "-f", "life"]).status.code(), Some(0));
     assert_eq!(text(&yarc(r, &["ps", "-a"]).stdout).lines().count(), 1);
 }
+
+#[test]
+#[ignore]
+fn exec_runs_inside_the_running_container() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    let out = yarc(r, &["run", "-d", "--name", "x", "-e", "A=1", IMAGE, "sh", "-c",
+        "echo hello > /tmp/marker; trap 'exit 0' TERM; while true; do sleep 0.2; done"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    eventually("the marker file", || text(&yarc(r, &["exec", "x", "cat", "/tmp/marker"]).stdout) == "hello\n");
+
+    // same namespaces and filesystem as the container's own process
+    let out = yarc(r, &["exec", "x", "sh", "-c", "echo $$ $(id -u) $(hostname) $A $(pwd)"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let f: Vec<String> = text(&out.stdout).split_whitespace().map(String::from).collect();
+    assert!(f[0].parse::<u32>().unwrap() < 100, "a pid from the container's own PID namespace: {f:?}");
+    assert_eq!(&f[1..], ["0", "x", "1", "/"]);
+    let n: u32 = text(&yarc(r, &["exec", "x", "sh", "-c", "ls /proc | grep -c '^[0-9]'"]).stdout).trim().parse().unwrap();
+    assert!(n <= 8, "only the container's processes are visible, saw {n}");
+
+    // options, exit status, failures
+    let out = yarc(r, &["exec", "-e", "B=2", "-w", "/tmp", "x", "sh", "-c", "echo $B $A $(pwd)"]);
+    assert_eq!(text(&out.stdout), "2 1 /tmp\n");
+    assert_eq!(yarc(r, &["exec", "x", "sh", "-c", "exit 3"]).status.code(), Some(3));
+    let missing = yarc(r, &["exec", "x", "no-such-cmd"]);
+    assert_eq!(missing.status.code(), Some(127), "{}", text(&missing.stderr));
+    let bad_env = yarc(r, &["exec", "-e", "NOEQUALS", "x", "true"]);
+    assert!(text(&bad_env.stderr).contains("KEY=VALUE"), "{}", text(&bad_env.stderr));
+
+    // what exec writes is what the container sees
+    assert_eq!(yarc(r, &["exec", "x", "sh", "-c", "echo from-exec > /tmp/y"]).status.code(), Some(0));
+    assert_eq!(text(&yarc(r, &["exec", "x", "cat", "/tmp/y"]).stdout), "from-exec\n");
+
+    assert_eq!(yarc(r, &["stop", "-t", "5", "x"]).status.code(), Some(0));
+    let stopped = yarc(r, &["exec", "x", "true"]);
+    assert!(!stopped.status.success());
+    assert!(text(&stopped.stderr).contains("not running"), "{}", text(&stopped.stderr));
+    let unknown = yarc(r, &["exec", "nope", "true"]);
+    assert!(text(&unknown.stderr).contains("no such container"), "{}", text(&unknown.stderr));
+}

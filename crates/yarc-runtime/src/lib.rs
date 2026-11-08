@@ -12,6 +12,9 @@
 mod container;
 mod error;
 #[cfg(target_os = "linux")]
+mod exec;
+mod health;
+#[cfg(target_os = "linux")]
 mod lifecycle;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -28,13 +31,13 @@ use std::os::fd::OwnedFd;
 pub use container::ContainerStore;
 pub use error::{Result, RuntimeError};
 #[cfg(target_os = "linux")]
-pub use lifecycle::{remove_container, run_recorded, run_recorded_with, signal_container, stop_container, Launch};
+pub use lifecycle::{exec_container, remove_container, run_recorded, run_recorded_with, signal_container, stop_container, Launch};
 #[cfg(target_os = "linux")]
 pub use linux::{process_alive, start, Running};
 pub use logs::{format_timestamp, read_log, read_log_from, LogEntry, LogWriter, Stream};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
-pub use spec::{resolve_process, ContainerSpec, ImageDefaults, Network, Overrides, Process, DEFAULT_PATH};
-pub use state::{describe, now_ms, ContainerState, Status};
+pub use spec::{resolve_process, ContainerSpec, HealthSpec, ImageDefaults, Network, Overrides, Process, DEFAULT_PATH};
+pub use state::{describe, now_ms, ContainerState, Health, HealthStatus, Status};
 
 /// How to start a container. The descriptors become the container's stdin,
 /// stdout and stderr (`None`: inherit yarc's); [`start`] closes yarc's copies.

@@ -12,10 +12,12 @@ use nix::unistd::Pid;
 
 use crate::container::ContainerStore;
 use crate::error::{io_err, Result, RuntimeError};
+use crate::exec::{spawn_exec, ExecChild};
+use crate::health::HealthTracker;
 use crate::linux::start;
 use crate::logs::LogWriter;
-use crate::pump::{pump, Tee};
-use crate::spec::ContainerSpec;
+use crate::pump::{pump, pump_with_tick, Tee, Tick};
+use crate::spec::{ContainerSpec, HealthSpec};
 use crate::state::{now_ms, ContainerState};
 use crate::StartOptions;
 
@@ -87,7 +89,9 @@ pub fn run_recorded_with(
     };
 
     let live = ContainerState::running(me, Some(running.pid()), started);
-    if let Err(err) = store.save_state(&spec.id, &live) {
+    let mut health = spec.health.clone().map(|h| HealthRunner::new(store, spec, running.pid(), live.clone(), h));
+    let first = health.as_ref().map_or_else(|| live.clone(), HealthRunner::snapshot);
+    if let Err(err) = store.save_state(&spec.id, &first) {
         // Not fatal: the container is already running and must be waited for.
         eprintln!("warning: cannot record state of {}: {err}", spec.id);
     }
@@ -98,7 +102,19 @@ pub fn run_recorded_with(
     } else {
         Tee { stdout: Some(Box::new(io::stdout())), stderr: Some(Box::new(io::stderr())) }
     };
-    let pumped = pump(OwnedFd::from(out_r), OwnedFd::from(err_r), &mut LogWriter::new(log_file), tee);
+    let mut log = LogWriter::new(log_file);
+    let (out_r, err_r) = (OwnedFd::from(out_r), OwnedFd::from(err_r));
+    let pumped = match health.as_mut() {
+        Some(runner) => {
+            let mut run = || runner.tick();
+            let tick = Tick { every: HEALTH_TICK, run: &mut run };
+            pump_with_tick(out_r, err_r, &mut log, tee, Some(tick))
+        }
+        None => pump(out_r, err_r, &mut log, tee),
+    };
+    if let Some(runner) = health.as_mut() {
+        runner.shutdown(); // a check still running must not outlive the container
+    }
     let code = running.wait();
 
     store.save_state(&spec.id, &live.exited(code, now_ms()))?;
@@ -108,19 +124,111 @@ pub fn run_recorded_with(
     Ok(code)
 }
 
+/// How often the supervisor looks at the health checks.
+const HEALTH_TICK: Duration = Duration::from_millis(200);
+
+/// Runs a container's health checks from the supervisor's poll loop: no thread,
+/// at most one check at a time, never blocking the output pump (a check is
+/// started, then polled on later ticks).
+struct HealthRunner<'a> {
+    store: &'a ContainerStore,
+    spec: &'a ContainerSpec,
+    init_pid: u32,
+    base: ContainerState,
+    tracker: HealthTracker,
+    check: Option<ExecChild>,
+}
+
+impl<'a> HealthRunner<'a> {
+    fn new(store: &'a ContainerStore, spec: &'a ContainerSpec, init_pid: u32, base: ContainerState, health: HealthSpec) -> Self {
+        HealthRunner { store, spec, init_pid, base, tracker: HealthTracker::new(health, now_ms()), check: None }
+    }
+
+    /// The state to record: the running state plus the current health.
+    fn snapshot(&self) -> ContainerState {
+        self.base.with_health(Some(self.tracker.health().clone()))
+    }
+
+    fn tick(&mut self) {
+        let now = now_ms();
+        let mut changed = false;
+        if let Some(check) = self.check.as_mut() {
+            if let Some(code) = check.try_wait() {
+                self.check = None;
+                changed = self.tracker.finished(now, Some(code));
+            } else if self.tracker.timed_out(now) {
+                check.kill();
+                if let Some(check) = self.check.take() {
+                    check.wait();
+                }
+                changed = self.tracker.finished(now, None);
+            }
+        } else if self.tracker.due(now) {
+            match spawn_exec(self.spec, self.init_pid, &self.tracker.spec().cmd, &[], None, quiet_stdio()) {
+                Ok(check) => {
+                    self.tracker.started_check(now);
+                    self.check = Some(check);
+                }
+                Err(RuntimeError::Start { code, .. }) => changed = self.tracker.finished(now, Some(code)),
+                Err(_) => changed = self.tracker.finished(now, None),
+            }
+        }
+        if changed {
+            if let Err(err) = self.store.save_state(&self.spec.id, &self.snapshot()) {
+                eprintln!("warning: cannot record health of {}: {err}", self.spec.id);
+            }
+        }
+    }
+
+    fn shutdown(&mut self) {
+        if let Some(check) = self.check.take() {
+            check.kill();
+            check.wait();
+        }
+    }
+}
+
+/// stdin from, stdout/stderr to `/dev/null` (a check's output is not recorded);
+/// falls back to inheriting if that cannot be opened.
+fn quiet_stdio() -> crate::linux::Stdio {
+    let open = |write: bool| File::options().read(!write).write(write).open("/dev/null").ok().map(OwnedFd::from);
+    crate::linux::Stdio { stdin: open(false), stdout: open(true), stderr: open(true) }
+}
+
 /// How long a SIGKILL'd container may take to disappear before we give up.
 const KILL_GRACE: Duration = Duration::from_secs(10);
+
+/// Host pid of the init of a running container. A recorded pid is only trusted
+/// while the supervisor lock is held, so a recycled pid is never used.
+fn running_pid(store: &ContainerStore, id: &str) -> Result<u32> {
+    store.load(id)?; // unknown id → "no such container"
+    match store.load_state(id)? {
+        Some(state) if state.is_running(store.is_supervised(id)?) => state.pid,
+        _ => None,
+    }
+    .ok_or_else(|| RuntimeError::NotRunning(id.to_string()))
+}
+
+/// Runs `args` inside a running container, with its environment plus `env`,
+/// attached to yarc's stdin/stdout/stderr; returns the exit status.
+pub fn exec_container(
+    store: &ContainerStore,
+    id: &str,
+    args: &[String],
+    env: &[(String, String)],
+    workdir: Option<&str>,
+) -> Result<i32> {
+    let spec = store.load(id)?;
+    let pid = running_pid(store, id)?;
+    let stdio = crate::linux::Stdio { stdin: None, stdout: None, stderr: None };
+    Ok(crate::exec::spawn_exec(&spec, pid, args, env, workdir, stdio)?.wait())
+}
 
 /// Sends `sig` (a signal number) to the container's init process. Signals from
 /// the host reach PID 1 of the container only if it has a handler for them;
 /// SIGKILL and SIGSTOP always do.
 pub fn signal_container(store: &ContainerStore, id: &str, sig: i32) -> Result<()> {
-    store.load(id)?; // unknown id → "no such container"
-    let pid = match store.load_state(id)? {
-        Some(state) if state.is_running(store.is_supervised(id)?) => state.pid,
-        _ => None,
-    }
-    .ok_or_else(|| RuntimeError::NotRunning(id.to_string()))?;
+    let pid = running_pid(store, id)?;
     let signal = Signal::try_from(sig).map_err(|_| RuntimeError::Unsupported(format!("invalid signal number {sig}")))?;
     match kill(Pid::from_raw(pid as i32), signal) {
         Ok(()) => Ok(()),

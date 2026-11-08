@@ -172,6 +172,8 @@ pub enum ContainerCommand {
     Ls,
     /// Start a created container in the foreground (Linux only)
     Start(StartArgs),
+    /// Run a command inside a running container
+    Exec(ExecArgs),
     /// Stop running containers: SIGTERM, then SIGKILL after a timeout
     Stop(StopArgs),
     /// Send a signal to running containers (default SIGKILL)
@@ -182,6 +184,24 @@ pub enum ContainerCommand {
     Logs(LogsArgs),
     /// Remove containers and their root filesystems
     Rm(RmArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ExecArgs {
+    /// Set an environment variable for the command (repeatable)
+    #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+
+    /// Working directory inside the container [default: the container's]
+    #[arg(short = 'w', long, value_name = "DIR")]
+    pub workdir: Option<String>,
+
+    /// Container id or name
+    pub id: String,
+
+    /// Command and arguments
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    pub cmd: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -435,6 +455,20 @@ mod tests {
         let Command::Project(ProjectCommand::Logs(a)) = parse(&["project", "logs", "-f", "-t", "--tail", "5", "web", "db"]).unwrap().command else { panic!() };
         assert!(a.follow && a.timestamps);
         assert_eq!((a.tail, a.services.as_slice()), (Some(5), &["web".to_string(), "db".to_string()][..]));
+    }
+
+    #[test]
+    fn exec_takes_options_before_the_container_and_a_command_after_it() {
+        let Command::Container(ContainerCommand::Exec(a)) =
+            parse(&["container", "exec", "-e", "A=1", "-w", "/tmp", "web", "sh", "-c", "echo $A", "--flag"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert_eq!((a.env.as_slice(), a.workdir.as_deref(), a.id.as_str()), (&["A=1".to_string()][..], Some("/tmp"), "web"));
+        assert_eq!(a.cmd, ["sh", "-c", "echo $A", "--flag"]);
+        assert!(matches!(parse(&["exec", "web", "ls"]).unwrap().command, Command::Direct(ContainerCommand::Exec(_))));
+        assert!(parse(&["exec", "web"]).is_err(), "a command is required");
+        assert!(parse(&["exec"]).is_err());
     }
 
     #[test]

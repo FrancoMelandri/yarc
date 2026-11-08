@@ -379,6 +379,7 @@ fn up_service(root: &Path, store: &ContainerStore, project: &str, service: &str,
                 },
                 network: yarc_runtime::Network::Host,
                 labels: labels(project, service, &hash),
+                health: def.health.as_ref().map(|h| yarc_runtime::HealthSpec::shell(&h.cmd, h.interval)),
             },
         )?;
     }
@@ -408,12 +409,52 @@ fn warn_unsupported(loaded: &Loaded) {
         if !svc.volumes.is_empty() {
             eprintln!("warning: {name}: volumes are not mounted yet");
         }
-        if svc.health.is_some() {
-            eprintln!("warning: {name}: health checks do not run yet");
+    }
+}
+
+/// How long `up` waits for a dependency to become healthy: a generous start-up
+/// allowance plus the time its health check needs to give up.
+#[cfg(target_os = "linux")]
+fn health_wait(def: &Service) -> Duration {
+    let spec = def.health.as_ref().map(|h| yarc_runtime::HealthSpec::shell(&h.cmd, h.interval));
+    Duration::from_secs(120) + spec.map_or(Duration::ZERO, |s| Duration::from_millis(s.interval_ms * u64::from(s.retries)))
+}
+
+/// Waits until `container` reports `healthy`. `Ok(false)` means `interrupted`
+/// (Ctrl-C) ended the wait.
+#[cfg(target_os = "linux")]
+fn wait_healthy(store: &ContainerStore, service: &str, container: &str, timeout: Duration, interrupted: &dyn Fn() -> bool) -> Result<bool> {
+    use yarc_runtime::{HealthStatus, Status};
+
+    let deadline = std::time::Instant::now() + timeout;
+    let mut announced = false;
+    loop {
+        match store.load_state(container)? {
+            Some(state) if state.status == Status::Exited => {
+                bail!("{service} exited (status {}) before it became healthy", state.exit_code.unwrap_or(-1));
+            }
+            Some(state) => match state.health.as_ref().map(|h| h.status) {
+                Some(HealthStatus::Healthy) => return Ok(true),
+                Some(HealthStatus::Unhealthy) => bail!("{service} is unhealthy"),
+                Some(HealthStatus::Starting) => {}
+                None => bail!("{service} has no health check"),
+            },
+            None => bail!("{service} was not started"),
         }
-        if svc.needs.values().any(|c| *c == Condition::Healthy) {
-            eprintln!("warning: {name}: `needs: healthy` is treated as `started` until health checks exist");
+        if !store.is_supervised(container)? {
+            bail!("{service} stopped supervising unexpectedly (it is dead)");
         }
+        if interrupted() {
+            return Ok(false);
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("timed out waiting for {service} to become healthy");
+        }
+        if !announced {
+            eprintln!("waiting for {service} to become healthy...");
+            announced = true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
@@ -439,6 +480,21 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
     let mut sources = Vec::new();
     for service in &loaded.order {
         if !detach && interrupt::requested() {
+            break;
+        }
+        let def = &loaded.project.services[service];
+        let mut interrupted = false;
+        for (dep, condition) in &def.needs {
+            if *condition == Condition::Healthy {
+                let dep_def = &loaded.project.services[dep];
+                let never = || false;
+                let stop: &dyn Fn() -> bool = if detach { &never } else { &interrupt::requested };
+                let ok = wait_healthy(&store, dep, &container_name(&loaded.name, dep), health_wait(dep_def), stop)
+                    .with_context(|| format!("service {service} needs {dep} to be healthy"))?;
+                interrupted |= !ok;
+            }
+        }
+        if interrupted {
             break;
         }
         let offset = up_service(root, &store, &loaded.name, service, &loaded.project.services[service])

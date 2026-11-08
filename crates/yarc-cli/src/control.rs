@@ -8,7 +8,22 @@ mod imp {
     use anyhow::{anyhow, Result};
     use yarc_runtime::ContainerStore;
 
-    use crate::cli::{KillArgs, RmArgs, StopArgs, WaitArgs};
+    use crate::cli::{ExecArgs, KillArgs, RmArgs, StopArgs, WaitArgs};
+
+    /// Runs a command in a running container; returns its exit status.
+    pub fn exec(root: &Path, args: ExecArgs) -> Result<u8> {
+        let env = args
+            .env
+            .iter()
+            .map(|e| match e.split_once('=') {
+                Some((k, v)) if !k.is_empty() => Ok((k.to_string(), v.to_string())),
+                _ => Err(anyhow!("invalid environment entry '{e}', expected KEY=VALUE")),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let containers = ContainerStore::open(root)?;
+        let code = yarc_runtime::exec_container(&containers, &args.id, &args.cmd, &env, args.workdir.as_deref())?;
+        Ok((code & 0xff) as u8)
+    }
 
     pub fn stop(root: &Path, args: StopArgs) -> Result<()> {
         let containers = ContainerStore::open(root)?;
@@ -114,10 +129,13 @@ mod imp {
 
     use anyhow::Result;
 
-    use crate::cli::{KillArgs, RmArgs, StopArgs, WaitArgs};
+    use crate::cli::{ExecArgs, KillArgs, RmArgs, StopArgs, WaitArgs};
 
     const MSG: &str = "managing containers needs Linux; run yarc inside WSL";
 
+    pub fn exec(_root: &Path, _args: ExecArgs) -> Result<u8> {
+        anyhow::bail!(MSG)
+    }
     pub fn stop(_root: &Path, _args: StopArgs) -> Result<()> {
         anyhow::bail!(MSG)
     }
@@ -132,4 +150,4 @@ mod imp {
     }
 }
 
-pub use imp::{kill, rm, stop, wait};
+pub use imp::{exec, kill, rm, stop, wait};

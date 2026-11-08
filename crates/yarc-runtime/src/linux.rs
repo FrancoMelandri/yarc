@@ -41,7 +41,7 @@ use crate::StartOptions;
 
 const FORWARDED: [Signal; 4] = [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP, Signal::SIGQUIT];
 /// Exit status of the helper processes when container setup fails.
-const SETUP_FAILED: i32 = 125;
+pub(crate) const SETUP_FAILED: i32 = 125;
 
 /// A started container: its command has been exec'd. Dropping this does not
 /// stop it; [`Running::wait`] blocks until it exits.
@@ -104,13 +104,13 @@ pub fn start(spec: &ContainerSpec, opts: StartOptions) -> Result<Running> {
 }
 
 /// Descriptors that become the container's stdin/stdout/stderr (`None`: inherit).
-struct Stdio {
-    stdin: Option<OwnedFd>,
-    stdout: Option<OwnedFd>,
-    stderr: Option<OwnedFd>,
+pub(crate) struct Stdio {
+    pub(crate) stdin: Option<OwnedFd>,
+    pub(crate) stdout: Option<OwnedFd>,
+    pub(crate) stderr: Option<OwnedFd>,
 }
 
-fn redirect(stdio: Stdio) -> std::result::Result<(), String> {
+pub(crate) fn redirect(stdio: Stdio) -> std::result::Result<(), String> {
     for (fd, target) in [(stdio.stdin, 0), (stdio.stdout, 1), (stdio.stderr, 2)] {
         if let Some(fd) = fd {
             dup2(fd.as_raw_fd(), target).map_err(|e| format!("redirecting fd {target}: {e}"))?;
@@ -124,9 +124,9 @@ fn sys(what: &'static str) -> impl Fn(Errno) -> RuntimeError {
 }
 
 /// A setup failure inside the container's init, with the exit status to report.
-struct Fail {
-    code: i32,
-    msg: String,
+pub(crate) struct Fail {
+    pub(crate) code: i32,
+    pub(crate) msg: String,
 }
 
 impl From<String> for Fail {
@@ -219,7 +219,7 @@ fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Resu
     }
 }
 
-fn read_line(r: &mut impl BufRead) -> Option<String> {
+pub(crate) fn read_line(r: &mut impl BufRead) -> Option<String> {
     let mut line = String::new();
     match r.read_line(&mut line) {
         Ok(0) | Err(_) => None,
@@ -228,7 +228,7 @@ fn read_line(r: &mut impl BufRead) -> Option<String> {
 }
 
 /// `error:<code>:<message>` as written by `die`.
-fn parse_error(line: &str) -> (i32, String) {
+pub(crate) fn parse_error(line: &str) -> (i32, String) {
     let rest = line.strip_prefix("error:").unwrap_or(line);
     match rest.split_once(':').and_then(|(c, m)| Some((c.parse().ok()?, m))) {
         Some((code, msg)) => (code, msg.to_string()),
@@ -246,7 +246,7 @@ fn write_id_maps(pid: Pid, uid: u32, gid: u32) -> std::io::Result<()> {
     fs::write(format!("{base}/gid_map"), format!("0 {gid} 1\n"))
 }
 
-fn wait_code(pid: Pid) -> i32 {
+pub(crate) fn wait_code(pid: Pid) -> i32 {
     loop {
         match waitpid(pid, None) {
             Ok(WaitStatus::Exited(_, code)) => return code,
@@ -259,17 +259,17 @@ fn wait_code(pid: Pid) -> i32 {
 
 // ------------------------------------------------------------------- monitor
 
-fn say(up: &mut File, line: &str) {
+pub(crate) fn say(up: &mut File, line: &str) {
     let line = format!("{}\n", line.replace('\n', " "));
     let _ = up.write_all(line.as_bytes());
 }
 
-fn die(up: &mut File, code: i32, msg: &str) -> ! {
+pub(crate) fn die(up: &mut File, code: i32, msg: &str) -> ! {
     say(up, &format!("error:{code}:{msg}"));
     exit(code)
 }
 
-fn exit(code: i32) -> ! {
+pub(crate) fn exit(code: i32) -> ! {
     // SAFETY: skips destructors and atexit handlers, which belong to the parent.
     unsafe { nix::libc::_exit(code) }
 }
@@ -378,13 +378,20 @@ fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], debug: bool) -> std::r
         chdir(spec.working_dir.as_str()).map_err(|e| format!("entering {}: {e}", spec.working_dir))?;
     }
 
+    exec_program(&spec.args, &spec.env)
+}
+
+/// Replaces this process with `args[0]` (looked up in the `PATH` of `env`, i.e.
+/// the container's, not the host's). Only returns on failure, with Docker's
+/// exit statuses: 127 not found, 126 not executable.
+pub(crate) fn exec_program(args: &[String], env: &[(String, String)]) -> std::result::Result<Infallible, Fail> {
     let to_c = |s: String| CString::new(s).map_err(|_| "command or environment contains a NUL byte".to_string());
-    let path_var = spec.env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap_or("");
-    let not_found = || Fail { code: 127, msg: format!("executable file not found in $PATH: {}", spec.args[0]) };
-    let program = resolve_executable(&spec.args[0], path_var, is_executable).ok_or_else(not_found)?;
+    let path_var = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.as_str()).unwrap_or("");
+    let not_found = || Fail { code: 127, msg: format!("executable file not found in $PATH: {}", args[0]) };
+    let program = resolve_executable(&args[0], path_var, is_executable).ok_or_else(not_found)?;
     let program = to_c(program.to_string_lossy().into_owned())?;
-    let argv = spec.args.iter().map(|a| to_c(a.clone())).collect::<std::result::Result<Vec<_>, _>>()?;
-    let envp = spec.env.iter().map(|(k, v)| to_c(format!("{k}={v}"))).collect::<std::result::Result<Vec<_>, _>>()?;
+    let argv = args.iter().map(|a| to_c(a.clone())).collect::<std::result::Result<Vec<_>, _>>()?;
+    let envp = env.iter().map(|(k, v)| to_c(format!("{k}={v}"))).collect::<std::result::Result<Vec<_>, _>>()?;
 
     let errno = match execve(&program, &argv, &envp) {
         Err(e) => e,
@@ -395,10 +402,10 @@ fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], debug: bool) -> std::r
         Errno::EACCES | Errno::ENOEXEC => 126,
         _ => SETUP_FAILED,
     };
-    Err(Fail { code, msg: format!("cannot execute {}: {errno}", spec.args[0]) })
+    Err(Fail { code, msg: format!("cannot execute {}: {errno}", args[0]) })
 }
 
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 

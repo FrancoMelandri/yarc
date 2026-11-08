@@ -6,3 +6,8 @@ license.workspace = true
 description = "OCI registry client, layer store, rootfs assembly"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+ureq = "3"

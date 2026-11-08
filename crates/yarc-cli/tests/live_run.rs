@@ -161,3 +161,76 @@ fn two_interrupts_stop_a_container_that_ignores_signals() {
     let status = child.wait().unwrap();
     assert_eq!(status.code(), Some(137), "128 + SIGKILL");
 }
+
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[test]
+#[ignore]
+fn output_is_recorded_per_stream_and_status_is_listed() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    let out = yarc(r, &["run", "--name", "l", IMAGE, "sh", "-c", "echo out; echo err >&2; printf partial; exit 4"]);
+    assert_eq!(out.status.code(), Some(4));
+    // it was also shown live
+    assert_eq!(text(&out.stdout), "out\npartial");
+    assert_eq!(text(&out.stderr).trim_end().lines().last(), Some("err"));
+
+    let logs = yarc(r, &["container", "logs", "l"]);
+    assert_eq!(text(&logs.stdout), "out\npartial\n");
+    assert_eq!(text(&logs.stderr), "err\n");
+    let tail = yarc(r, &["container", "logs", "--tail", "1", "l"]);
+    assert_eq!(text(&tail.stdout), "partial\n");
+    let stamped = yarc(r, &["container", "logs", "-t", "l"]);
+    let first = text(&stamped.stdout).lines().next().unwrap().to_string();
+    assert!(first.len() > 25 && first.contains('T') && first.ends_with(" out"), "{first}");
+
+    let ls = text(&yarc(r, &["container", "ls"]).stdout);
+    assert!(ls.contains("Exited (4)"), "{ls}");
+
+    // starting again appends to the same log
+    yarc(r, &["container", "start", "l"]);
+    let logs = yarc(r, &["container", "logs", "l"]);
+    assert_eq!(text(&logs.stdout), "out\npartial\nout\npartial\n");
+
+    let state = std::fs::read_to_string(r.join("containers/l/state.json")).unwrap();
+    assert!(state.contains("\"status\": \"exited\"") && state.contains("\"exit_code\": 4"), "{state}");
+}
+
+#[test]
+#[ignore]
+fn a_failed_start_is_recorded_as_exited() {
+    let root = tempfile::tempdir().unwrap();
+    let out = yarc(root.path(), &["run", "--name", "f", IMAGE, "no-such-program"]);
+    assert_eq!(out.status.code(), Some(127));
+    let ls = text(&yarc(root.path(), &["container", "ls"]).stdout);
+    assert!(ls.contains("Exited (127)"), "{ls}");
+}
+
+#[test]
+#[ignore]
+fn dead_and_already_running_containers_are_detected() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    yarc(r, &["create", "--name", "d", IMAGE, "true"]);
+    let state_path = r.join("containers/d/state.json");
+    let write_state = |supervisor: u32| {
+        std::fs::write(
+            &state_path,
+            format!(r#"{{"status":"running","supervisor_pid":{supervisor},"pid":null,"started_ms":1,"finished_ms":null,"exit_code":null}}"#),
+        )
+        .unwrap();
+    };
+
+    write_state(1); // pid 1 exists
+    assert!(text(&yarc(r, &["container", "ls"]).stdout).contains("Running"));
+    let out = yarc(r, &["container", "start", "d"]);
+    assert!(!out.status.success());
+    assert!(text(&out.stderr).contains("already running"), "{}", text(&out.stderr));
+
+    write_state(4_000_000); // no such process
+    assert!(text(&yarc(r, &["container", "ls"]).stdout).contains("Dead"));
+    // a dead container can be started again
+    assert_eq!(yarc(r, &["container", "start", "d"]).status.code(), Some(0));
+}

@@ -85,6 +85,8 @@ pub enum ContainerCommand {
     Ls,
     /// Start a created container in the foreground (Linux only)
     Start(StartArgs),
+    /// Show what a container printed
+    Logs(LogsArgs),
     /// Remove containers and their root filesystems
     Rm(RmArgs),
 }
@@ -97,6 +99,20 @@ pub struct StartArgs {
     /// Print the setup plan and skipped optional steps
     #[arg(long)]
     pub debug: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct LogsArgs {
+    /// Container id or name
+    pub id: String,
+
+    /// Only the last N lines
+    #[arg(long, value_name = "N")]
+    pub tail: Option<usize>,
+
+    /// Prefix each line with its timestamp
+    #[arg(short = 't', long)]
+    pub timestamps: bool,
 }
 
 #[derive(Debug, Args)]
@@ -226,6 +242,15 @@ mod tests {
         let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "--debug", "web"]).unwrap().command else { panic!() };
         assert!(a.debug);
         assert!(parse(&["container", "start"]).is_err());
+    }
+
+    #[test]
+    fn container_logs() {
+        let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "web"]).unwrap().command else { panic!() };
+        assert_eq!((a.id.as_str(), a.tail, a.timestamps), ("web", None, false));
+        let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "--tail", "5", "-t", "web"]).unwrap().command else { panic!() };
+        assert_eq!((a.tail, a.timestamps), (Some(5), true));
+        assert!(parse(&["container", "logs", "--tail", "x", "web"]).is_err());
     }
 
     #[test]

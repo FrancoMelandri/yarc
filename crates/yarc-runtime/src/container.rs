@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{io_err, Result, RuntimeError};
 use crate::spec::ContainerSpec;
+use crate::state::{describe, ContainerState};
 
 const MAX_NAME: usize = 64;
 
@@ -61,10 +62,39 @@ impl ContainerStore {
         check_id(&spec.id)?;
         let path = self.config_path(&spec.id);
         let json = serde_json::to_vec_pretty(spec).map_err(|source| RuntimeError::Json { path: path.clone(), source })?;
-        // Write-then-rename so a crash never leaves a half-written config.
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, json).map_err(io_err(format!("cannot write {}", tmp.display())))?;
-        fs::rename(&tmp, &path).map_err(io_err(format!("cannot write {}", path.display())))
+        write_atomic(&path, &json)
+    }
+
+    pub fn state_path(&self, id: &str) -> PathBuf {
+        self.container_dir(id).join("state.json")
+    }
+
+    /// Where the container's output is recorded (see `logs`).
+    pub fn log_path(&self, id: &str) -> PathBuf {
+        self.container_dir(id).join("container.log")
+    }
+
+    pub fn save_state(&self, id: &str, state: &ContainerState) -> Result<()> {
+        check_id(id)?;
+        let path = self.state_path(id);
+        let json = serde_json::to_vec_pretty(state).map_err(|source| RuntimeError::Json { path: path.clone(), source })?;
+        write_atomic(&path, &json)
+    }
+
+    /// `None` for a container that was never started.
+    pub fn load_state(&self, id: &str) -> Result<Option<ContainerState>> {
+        check_id(id).map_err(|_| RuntimeError::NotFound(id.to_string()))?;
+        let path = self.state_path(id);
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|source| RuntimeError::Json { path, source }),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(RuntimeError::Io { context: format!("cannot read {}", path.display()), source: e }),
+        }
+    }
+
+    /// Listing status (`Created`, `Running`, `Exited (n)`, `Dead`).
+    pub fn status_text(&self, id: &str) -> Result<String> {
+        Ok(describe(self.load_state(id)?.as_ref(), crate::process_alive))
     }
 
     pub fn load(&self, id: &str) -> Result<ContainerSpec> {
@@ -106,6 +136,14 @@ impl ContainerStore {
             Err(e) => Err(RuntimeError::Io { context: format!("cannot remove {}", dir.display()), source: e }),
         }
     }
+}
+
+/// Write-then-rename so a crash (or a concurrent reader) never sees a
+/// half-written file.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, bytes).map_err(io_err(format!("cannot write {}", tmp.display())))?;
+    fs::rename(&tmp, path).map_err(io_err(format!("cannot write {}", path.display())))
 }
 
 /// Ids double as directory names, so this also blocks path traversal.
@@ -201,6 +239,20 @@ mod tests {
         store.remove(&id).unwrap();
         assert!(!store.container_dir(&id).exists());
         assert!(matches!(store.remove(&id), Err(RuntimeError::NotFound(_))));
+    }
+
+    #[test]
+    fn state_roundtrip_and_status_text() {
+        let (_r, store) = store();
+        let id = store.allocate(Some("s")).unwrap();
+        assert_eq!(store.load_state(&id).unwrap(), None);
+        assert_eq!(store.status_text(&id).unwrap(), "Created");
+        let running = ContainerState::running(std::process::id(), Some(1), 10);
+        store.save_state(&id, &running).unwrap();
+        assert_eq!(store.load_state(&id).unwrap(), Some(running.clone()));
+        store.save_state(&id, &running.exited(4, 20)).unwrap();
+        assert_eq!(store.status_text(&id).unwrap(), "Exited (4)");
+        assert!(matches!(store.load_state("../x"), Err(RuntimeError::NotFound(_))));
     }
 
     #[test]

@@ -19,6 +19,7 @@ use std::convert::Infallible;
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
@@ -30,25 +31,55 @@ use nix::sched::{unshare, CloneFlags};
 use nix::sys::prctl;
 use nix::sys::signal::{sigaction, signal, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{chdir, execve, fork, getegid, geteuid, pipe2, pivot_root, sethostname, ForkResult, Pid};
+use nix::unistd::{chdir, dup2, execve, fork, getegid, geteuid, pipe2, pivot_root, sethostname, ForkResult, Pid};
 
 use crate::error::{Result, RuntimeError};
 use crate::paths::{resolve_executable, safe_join, safe_join_file};
 use crate::plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
 use crate::spec::{ContainerSpec, Network};
-use crate::RunOptions;
+use crate::StartOptions;
 
 const FORWARDED: [Signal; 4] = [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP, Signal::SIGQUIT];
 /// Exit status of the helper processes when container setup fails.
 const SETUP_FAILED: i32 = 125;
 
-/// Runs the container in the foreground and returns its exit status
-/// (`128 + n` when it was killed by signal `n`).
-pub fn run(spec: &ContainerSpec, opts: &RunOptions) -> Result<i32> {
+/// A started container: its command has been exec'd. Dropping this does not
+/// stop it; [`Running::wait`] blocks until it exits.
+pub struct Running {
+    monitor: Pid,
+    pid: i32,
+    _signals: SignalGuard,
+}
+
+impl Running {
+    /// Host pid of the container's init (PID 1 inside).
+    pub fn pid(&self) -> u32 {
+        self.pid as u32
+    }
+
+    /// Waits for the container to exit; returns its status (`128 + n` when it
+    /// was killed by signal `n`). Termination signals sent to yarc are
+    /// forwarded to the container until this returns.
+    pub fn wait(self) -> i32 {
+        wait_code(self.monitor)
+    }
+}
+
+/// True if a process with this pid exists (it may belong to another user).
+pub fn process_alive(pid: u32) -> bool {
+    matches!(nix::sys::signal::kill(Pid::from_raw(pid as i32), None), Ok(()) | Err(Errno::EPERM))
+}
+
+/// Starts the container and returns once its command is running (or failed to
+/// start). The stdio descriptors in `opts` are closed in the calling process
+/// before returning, so a reader sees EOF when the container's side closes.
+pub fn start(spec: &ContainerSpec, opts: StartOptions) -> Result<Running> {
     check_user(spec.user.as_deref())?;
     if spec.args.is_empty() {
         return Err(RuntimeError::NoCommand);
     }
+    let StartOptions { debug, stdin, stdout, stderr } = opts;
+    let stdio = Stdio { stdin, stdout, stderr };
     let plan = mount_plan(spec);
     let (up_r, up_w) = pipe2(OFlag::O_CLOEXEC).map_err(sys("pipe"))?;
     let (down_r, down_w) = pipe2(OFlag::O_CLOEXEC).map_err(sys("pipe"))?;
@@ -61,14 +92,31 @@ pub fn run(spec: &ContainerSpec, opts: &RunOptions) -> Result<i32> {
         ForkResult::Child => {
             drop(up_r);
             drop(down_w);
-            monitor(spec, &plan, opts, File::from(up_w), File::from(down_r))
+            monitor(spec, &plan, debug, File::from(up_w), File::from(down_r), stdio)
         }
         ForkResult::Parent { child } => {
             drop(up_w);
             drop(down_r);
+            drop(stdio);
             supervise(child, uid, gid, File::from(up_r), File::from(down_w))
         }
     }
+}
+
+/// Descriptors that become the container's stdin/stdout/stderr (`None`: inherit).
+struct Stdio {
+    stdin: Option<OwnedFd>,
+    stdout: Option<OwnedFd>,
+    stderr: Option<OwnedFd>,
+}
+
+fn redirect(stdio: Stdio) -> std::result::Result<(), String> {
+    for (fd, target) in [(stdio.stdin, 0), (stdio.stdout, 1), (stdio.stderr, 2)] {
+        if let Some(fd) = fd {
+            dup2(fd.as_raw_fd(), target).map_err(|e| format!("redirecting fd {target}: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn sys(what: &'static str) -> impl Fn(Errno) -> RuntimeError {
@@ -131,9 +179,10 @@ impl Drop for SignalGuard {
     }
 }
 
-fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Result<i32> {
+fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Result<Running> {
     TARGET.store(monitor.as_raw(), Ordering::SeqCst);
-    let _signals = SignalGuard::install();
+    let signals = SignalGuard::install();
+    let mut init_pid = monitor.as_raw();
     let mut up = BufReader::new(up);
     let mut failure: Option<(i32, String)> = None;
 
@@ -153,6 +202,7 @@ fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Resu
     if failure.is_none() {
         while let Some(line) = read_line(&mut up) {
             if let Some(pid) = line.strip_prefix("pid:").and_then(|p| p.parse::<i32>().ok()) {
+                init_pid = pid;
                 TARGET.store(pid, Ordering::SeqCst);
             } else if line.starts_with("error:") {
                 failure = Some(parse_error(&line));
@@ -160,10 +210,12 @@ fn supervise(monitor: Pid, uid: u32, gid: u32, up: File, mut down: File) -> Resu
         }
     }
 
-    let code = wait_code(monitor);
     match failure {
-        Some((code, msg)) => Err(RuntimeError::Start { msg, code }),
-        None => Ok(code),
+        Some((code, msg)) => {
+            wait_code(monitor); // reap the helper processes
+            Err(RuntimeError::Start { msg, code })
+        }
+        None => Ok(Running { monitor, pid: init_pid, _signals: signals }),
     }
 }
 
@@ -222,7 +274,7 @@ fn exit(code: i32) -> ! {
     unsafe { nix::libc::_exit(code) }
 }
 
-fn monitor(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions, mut up: File, mut down: File) -> ! {
+fn monitor(spec: &ContainerSpec, plan: &[SetupOp], debug: bool, mut up: File, mut down: File, stdio: Stdio) -> ! {
     // Terminal signals (Ctrl-C) reach the whole process group; only the
     // supervisor reacts to them, and it forwards them to the container.
     for sig in FORWARDED {
@@ -253,10 +305,11 @@ fn monitor(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions, mut up: Fi
     // SAFETY: see `run`.
     match unsafe { fork() } {
         Err(e) => die(&mut up, SETUP_FAILED, &format!("fork: {e}")),
-        Ok(ForkResult::Child) => init(spec, plan, opts, up),
+        Ok(ForkResult::Child) => init(spec, plan, debug, up, stdio),
         Ok(ForkResult::Parent { child }) => {
             say(&mut up, &format!("pid:{}", child.as_raw()));
             drop(up); // so EOF on the pipe really means "exec happened"
+            drop(stdio); // the output pipes must only stay open in the container
             exit(wait_code(child))
         }
     }
@@ -264,14 +317,17 @@ fn monitor(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions, mut up: Fi
 
 // ---------------------------------------------------------------------- init
 
-fn init(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions, mut up: File) -> ! {
+fn init(spec: &ContainerSpec, plan: &[SetupOp], debug: bool, mut up: File, stdio: Stdio) -> ! {
     for sig in FORWARDED {
         // Ignored signals would be inherited by the container's command.
         // SAFETY: restoring the default disposition.
         let _ = unsafe { signal(sig, SigHandler::SigDfl) };
     }
     let _ = prctl::set_pdeathsig(Signal::SIGKILL);
-    match setup_and_exec(spec, plan, opts) {
+    if let Err(msg) = redirect(stdio) {
+        die(&mut up, SETUP_FAILED, &msg);
+    }
+    match setup_and_exec(spec, plan, debug) {
         Err(fail) => die(&mut up, fail.code, &fail.msg),
         Ok(never) => match never {},
     }
@@ -281,7 +337,7 @@ fn ctx(what: &'static str) -> impl Fn(Errno) -> String {
     move |e| format!("{what}: {e}")
 }
 
-fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions) -> std::result::Result<Infallible, Fail> {
+fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], debug: bool) -> std::result::Result<Infallible, Fail> {
     let root = spec.rootfs.as_path();
     let none: Option<&str> = None;
 
@@ -295,7 +351,7 @@ fn setup_and_exec(spec: &ContainerSpec, plan: &[SetupOp], opts: &RunOptions) -> 
             if !op.optional() {
                 return Err(msg.into());
             }
-            if opts.debug {
+            if debug {
                 eprintln!("yarc: warning: skipped optional setup step: {msg}");
             }
         }

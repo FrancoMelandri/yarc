@@ -5,39 +5,51 @@
 //! youki's `libcontainer`.
 //!
 //! This crate also owns the *description* of a container ([`ContainerSpec`],
-//! built by [`resolve_process`]) and its on-disk record ([`ContainerStore`]).
-//! [`run`] starts one container in the foreground (Linux only); the
-//! create/start/kill/delete [`Runtime`] trait is for the detached model of M3.
+//! built by [`resolve_process`]), its on-disk record ([`ContainerStore`]:
+//! config, state, log) and, on Linux, [`start`] / [`run_recorded`] to run one.
+//! The create/start/kill/delete [`Runtime`] trait is for the detached model.
 
 mod container;
 mod error;
 #[cfg(target_os = "linux")]
+mod lifecycle;
+#[cfg(target_os = "linux")]
 mod linux;
+mod logs;
 mod paths;
 mod plan;
+#[cfg(target_os = "linux")]
+mod pump;
 mod spec;
+mod state;
+
+use std::os::fd::OwnedFd;
 
 pub use container::ContainerStore;
 pub use error::{Result, RuntimeError};
+#[cfg(target_os = "linux")]
+pub use lifecycle::{run_recorded, Launch};
+#[cfg(target_os = "linux")]
+pub use linux::{process_alive, start, Running};
+pub use logs::{format_timestamp, read_log, LogEntry, LogWriter, Stream};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
 pub use spec::{resolve_process, ContainerSpec, ImageDefaults, Network, Overrides, Process, DEFAULT_PATH};
+pub use state::{describe, now_ms, ContainerState, Status};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RunOptions {
+/// How to start a container. The descriptors become the container's stdin,
+/// stdout and stderr (`None`: inherit yarc's); [`start`] closes yarc's copies.
+#[derive(Debug, Default)]
+pub struct StartOptions {
     /// Report optional setup steps that were skipped.
     pub debug: bool,
-}
-
-/// Runs the container in the foreground and returns its exit status
-/// (`128 + n` if it was killed by signal `n`).
-#[cfg(target_os = "linux")]
-pub fn run(spec: &ContainerSpec, opts: &RunOptions) -> Result<i32> {
-    linux::run(spec, opts)
+    pub stdin: Option<OwnedFd>,
+    pub stdout: Option<OwnedFd>,
+    pub stderr: Option<OwnedFd>,
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn run(_spec: &ContainerSpec, _opts: &RunOptions) -> Result<i32> {
-    Err(RuntimeError::Unsupported("running containers needs Linux; run yarc inside WSL".into()))
+pub fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

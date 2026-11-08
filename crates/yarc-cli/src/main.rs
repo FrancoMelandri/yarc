@@ -38,6 +38,7 @@ fn run() -> Result<u8> {
         Command::Pull(args) => commands::pull(&root, args).map(|()| 0),
         Command::Image(ImageCommand::Unpack(args)) => commands::unpack(&root, args).map(|()| 0),
         Command::Create(args) => commands::create(&root, args).map(|()| 0),
+        Command::Container(ContainerCommand::Logs(args)) => commands::container_logs(&root, args).map(|()| 0),
         Command::Container(ContainerCommand::Ls) => commands::container_ls(&root).map(|()| 0),
         Command::Container(ContainerCommand::Rm(args)) => commands::container_rm(&root, args).map(|()| 0),
     }

@@ -12,6 +12,8 @@ pub enum RuntimeError {
     InvalidName(String),
     #[error("a container named '{0}' already exists")]
     AlreadyExists(String),
+    #[error("container {0} is already running")]
+    AlreadyRunning(String),
     #[error("no such container: {0}")]
     NotFound(String),
     #[error("{0}")]

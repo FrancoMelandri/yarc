@@ -120,14 +120,22 @@ fn create_container(_root: &Path, _args: crate::cli::CreateArgs) -> Result<Strin
 
 pub fn container_ls(root: &Path) -> Result<()> {
     let containers = yarc_runtime::ContainerStore::open(root)?;
-    println!("{:<14} {:<24} COMMAND", "CONTAINER ID", "IMAGE");
+    println!("{:<14} {:<24} {:<12} COMMAND", "CONTAINER ID", "IMAGE", "STATUS");
     for c in containers.list()? {
-        println!("{:<14} {:<24} {}", c.id, c.image, c.args.join(" "));
+        let status = containers.status_text(&c.id)?;
+        println!("{:<14} {:<24} {:<12} {}", c.id, c.image, status, c.args.join(" "));
     }
     Ok(())
 }
 
-/// Runs a created container in the foreground; the result is yarc's exit code.
+#[cfg(not(target_os = "linux"))]
+pub fn container_start(_root: &Path, _args: crate::cli::StartArgs) -> Result<u8> {
+    anyhow::bail!("running containers needs Linux; run yarc inside WSL")
+}
+
+/// Runs a created container in the foreground (recording its state and log);
+/// the result is yarc's exit code.
+#[cfg(target_os = "linux")]
 pub fn container_start(root: &Path, args: crate::cli::StartArgs) -> Result<u8> {
     let containers = yarc_runtime::ContainerStore::open(root)?;
     let spec = containers.load(&args.id)?;
@@ -140,8 +148,32 @@ pub fn container_start(root: &Path, args: crate::cli::StartArgs) -> Result<u8> {
             eprintln!("  {op:?}");
         }
     }
-    let code = yarc_runtime::run(&spec, &yarc_runtime::RunOptions { debug: args.debug })?;
+    let launch = yarc_runtime::Launch { debug: args.debug, detached: false };
+    let code = yarc_runtime::run_recorded(&containers, &spec, &launch)?;
     Ok((code & 0xff) as u8)
+}
+
+/// Prints a container's recorded output: stdout lines to stdout, stderr lines
+/// to stderr, like `docker logs`.
+pub fn container_logs(root: &Path, args: crate::cli::LogsArgs) -> Result<()> {
+    use yarc_runtime::Stream;
+
+    let containers = yarc_runtime::ContainerStore::open(root)?;
+    containers.load(&args.id)?; // "no such container" for unknown ids
+    let entries = yarc_runtime::read_log(&containers.log_path(&args.id))?;
+    let skip = args.tail.map_or(0, |n| entries.len().saturating_sub(n));
+    for entry in &entries[skip..] {
+        let line = if args.timestamps {
+            format!("{} {}", yarc_runtime::format_timestamp(entry.ts), entry.line)
+        } else {
+            entry.line.clone()
+        };
+        match entry.stream {
+            Stream::Stdout => println!("{line}"),
+            Stream::Stderr => eprintln!("{line}"),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

@@ -1,0 +1,10 @@
+[package]
+name = "yarc-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "yarc command line (host side)"
+
+[dependencies]
+yarc-config = { path = "../yarc-config" }
+yarc-proto = { path = "../yarc-proto" }

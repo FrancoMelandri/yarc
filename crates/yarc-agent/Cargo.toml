@@ -1,0 +1,11 @@
+[package]
+name = "yarc-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "yarc agent: runs inside Linux (native or VM)"
+
+[dependencies]
+yarc-oci = { path = "../yarc-oci" }
+yarc-runtime = { path = "../yarc-runtime" }
+yarc-proto = { path = "../yarc-proto" }

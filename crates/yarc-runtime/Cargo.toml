@@ -1,0 +1,8 @@
+[package]
+name = "yarc-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Container runtime: namespaces, cgroups, overlayfs"
+
+[dependencies]

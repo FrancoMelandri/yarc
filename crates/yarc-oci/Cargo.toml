@@ -1,0 +1,8 @@
+[package]
+name = "yarc-oci"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OCI registry client, layer store, rootfs assembly"
+
+[dependencies]

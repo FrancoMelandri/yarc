@@ -1,0 +1,8 @@
+[package]
+name = "yarc-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "yarc.yaml model and parser"
+
+[dependencies]

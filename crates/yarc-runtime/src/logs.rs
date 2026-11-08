@@ -6,7 +6,7 @@
 //! ```
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -93,18 +93,31 @@ fn encode(batch: &mut Vec<u8>, stream: Stream, line: &[u8], ts: u64) {
     batch.push(b'\n');
 }
 
-/// Reads a log file. Unparsable lines (e.g. one being written right now) are
-/// skipped; a missing file is an empty log.
+/// Reads a log file. Unparsable lines are skipped, an unterminated last line
+/// (being written right now) is left out; a missing file is an empty log.
 pub fn read_log(path: &Path) -> Result<Vec<LogEntry>> {
-    let text = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(io_err(format!("cannot read {}", path.display()))(e)),
+    Ok(read_log_from(path, 0)?.0)
+}
+
+/// Reads the complete entries after byte `offset` and returns them with the
+/// offset to continue from (just past the last complete line), which is how
+/// `logs -f` follows a file without re-reading it.
+pub fn read_log_from(path: &Path, offset: u64) -> Result<(Vec<LogEntry>, u64)> {
+    let ctx = || format!("cannot read {}", path.display());
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), offset)),
+        Err(e) => return Err(io_err(ctx())(e)),
     };
-    Ok(text
+    file.seek(SeekFrom::Start(offset)).map_err(io_err(ctx()))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).map_err(io_err(ctx()))?;
+    let complete = buf.iter().rposition(|&b| b == b'\n').map_or(0, |p| p + 1);
+    let entries = buf[..complete]
         .split(|&b| b == b'\n')
         .filter_map(|line| serde_json::from_slice::<LogEntry>(line).ok())
-        .collect())
+        .collect();
+    Ok((entries, offset + complete as u64))
 }
 
 /// `2023-11-14T22:13:20.123Z`
@@ -221,6 +234,34 @@ mod tests {
         // a torn last line is ignored
         fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(b"{\"ts\":1,\"str").unwrap();
         assert_eq!(read_log(&path).unwrap(), vec![e(7, Stream::Stdout, "say \"hi\"\t\\o/ ✓")]);
+    }
+
+    #[test]
+    fn following_returns_only_new_complete_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.log");
+        assert_eq!(read_log_from(&path, 0).unwrap(), (vec![], 0), "missing file");
+
+        let mut file = fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        let mut w = LogWriter::new(Vec::new());
+        w.push(Stream::Stdout, b"one\ntwo\n", 1).unwrap();
+        file.write_all(&w.out).unwrap();
+        let (first, offset) = read_log_from(&path, 0).unwrap();
+        assert_eq!(first.iter().map(|e| e.line.as_str()).collect::<Vec<_>>(), ["one", "two"]);
+
+        // nothing new yet
+        assert_eq!(read_log_from(&path, offset).unwrap(), (vec![], offset));
+
+        // half an entry is not returned, and not skipped either
+        let mut w2 = LogWriter::new(Vec::new());
+        w2.push(Stream::Stderr, b"three\n", 2).unwrap();
+        let (head, tail) = w2.out.split_at(10);
+        file.write_all(head).unwrap();
+        assert_eq!(read_log_from(&path, offset).unwrap(), (vec![], offset));
+        file.write_all(tail).unwrap();
+        let (next, offset2) = read_log_from(&path, offset).unwrap();
+        assert_eq!(next, vec![e(2, Stream::Stderr, "three")]);
+        assert_eq!(offset2, fs::metadata(&path).unwrap().len());
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::hash::{BuildHasher, Hasher};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::error::{io_err, Result, RuntimeError};
 use crate::spec::ContainerSpec;
@@ -123,6 +124,21 @@ impl ContainerStore {
             Ok(()) => Ok(Some(file)),
             Err(TryLockError::WouldBlock) => Ok(None),
             Err(TryLockError::Error(e)) => Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e }),
+        }
+    }
+
+    /// Waits until nobody supervises the container any more (it has exited, or
+    /// is dead). Returns `false` if `timeout` ran out first; `None` waits forever.
+    pub fn wait_exit(&self, id: &str, timeout: Option<Duration>) -> Result<bool> {
+        let deadline = timeout.map(|t| Instant::now() + t);
+        loop {
+            if !self.is_supervised(id)? {
+                return Ok(true);
+            }
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -305,6 +321,25 @@ mod tests {
         assert!(!store.is_supervised(&id).unwrap());
         assert!(matches!(store.try_acquire("missing"), Err(RuntimeError::NotFound(_))));
         assert!(matches!(store.try_acquire("../x"), Err(RuntimeError::NotFound(_))));
+    }
+
+    #[test]
+    fn wait_exit_returns_when_the_lock_holder_lets_go_or_on_timeout() {
+        let (_r, store) = store();
+        let id = store.allocate(Some("w")).unwrap();
+        assert!(store.wait_exit(&id, Some(Duration::from_millis(10))).unwrap(), "nobody supervises it");
+
+        let lock = store.try_acquire(&id).unwrap().unwrap();
+        let started = Instant::now();
+        assert!(!store.wait_exit(&id, Some(Duration::from_millis(150))).unwrap());
+        assert!(started.elapsed() >= Duration::from_millis(150));
+
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(lock);
+        });
+        assert!(store.wait_exit(&id, Some(Duration::from_secs(5))).unwrap());
+        releaser.join().unwrap();
     }
 
     #[test]

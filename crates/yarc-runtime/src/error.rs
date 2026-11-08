@@ -14,6 +14,10 @@ pub enum RuntimeError {
     AlreadyExists(String),
     #[error("container {0} is already running")]
     AlreadyRunning(String),
+    #[error("container {0} is not running")]
+    NotRunning(String),
+    #[error("container {0} is running: stop it first, or force removal")]
+    StillRunning(String),
     #[error("no such container: {0}")]
     NotFound(String),
     #[error("{0}")]

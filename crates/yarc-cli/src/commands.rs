@@ -10,7 +10,7 @@ use yarc_oci::{BlobStore, Platform, PullReport, Reference, RegistryClient, UreqT
 
 use crate::cli::{PullArgs, UnpackArgs};
 #[cfg(unix)]
-use crate::cli::{CreateArgs, RmArgs};
+use crate::cli::CreateArgs;
 
 fn open_store(root: &Path) -> Result<BlobStore> {
     BlobStore::open(root).with_context(|| format!("cannot open store at {}", root.display()))
@@ -178,35 +178,38 @@ pub fn container_logs(root: &Path, args: crate::cli::LogsArgs) -> Result<()> {
 
     let containers = yarc_runtime::ContainerStore::open(root)?;
     containers.load(&args.id)?; // "no such container" for unknown ids
-    let entries = yarc_runtime::read_log(&containers.log_path(&args.id))?;
-    let skip = args.tail.map_or(0, |n| entries.len().saturating_sub(n));
-    for entry in &entries[skip..] {
-        let line = if args.timestamps {
-            format!("{} {}", yarc_runtime::format_timestamp(entry.ts), entry.line)
-        } else {
-            entry.line.clone()
-        };
-        match entry.stream {
-            Stream::Stdout => println!("{line}"),
-            Stream::Stderr => eprintln!("{line}"),
+    let path = containers.log_path(&args.id);
+    let print = |entries: &[yarc_runtime::LogEntry]| {
+        for entry in entries {
+            let line = if args.timestamps {
+                format!("{} {}", yarc_runtime::format_timestamp(entry.ts), entry.line)
+            } else {
+                entry.line.clone()
+            };
+            match entry.stream {
+                Stream::Stdout => println!("{line}"),
+                Stream::Stderr => eprintln!("{line}"),
+            }
         }
-    }
-    Ok(())
-}
+    };
 
-#[cfg(unix)]
-pub fn container_rm(root: &Path, args: RmArgs) -> Result<()> {
-    let containers = yarc_runtime::ContainerStore::open(root)?;
-    for id in &args.ids {
-        containers.remove(id)?;
-        println!("{id}");
+    let (entries, mut offset) = yarc_runtime::read_log_from(&path, 0)?;
+    print(&entries[args.tail.map_or(0, |n| entries.len().saturating_sub(n))..]);
+    if !args.follow {
+        return Ok(());
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn container_rm(_root: &Path, _args: crate::cli::RmArgs) -> Result<()> {
-    anyhow::bail!("run yarc inside WSL")
+    loop {
+        // Look at the lock *before* reading: whatever the container wrote before
+        // it exited is then guaranteed to be in this last read.
+        let running = containers.is_supervised(&args.id)?;
+        let (entries, next) = yarc_runtime::read_log_from(&path, offset)?;
+        offset = next;
+        print(&entries);
+        if !running {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 #[cfg(unix)]

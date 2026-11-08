@@ -4,6 +4,11 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::OwnedFd;
+use std::time::Duration;
+
+use nix::errno::Errno;
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 
 use crate::container::ContainerStore;
 use crate::error::{io_err, Result, RuntimeError};
@@ -101,4 +106,70 @@ pub fn run_recorded_with(
         eprintln!("warning: output of {} was not fully recorded: {err}", spec.id);
     }
     Ok(code)
+}
+
+/// How long a SIGKILL'd container may take to disappear before we give up.
+const KILL_GRACE: Duration = Duration::from_secs(10);
+
+/// Sends `sig` (a signal number) to the container's init process. Signals from
+/// the host reach PID 1 of the container only if it has a handler for them;
+/// SIGKILL and SIGSTOP always do.
+pub fn signal_container(store: &ContainerStore, id: &str, sig: i32) -> Result<()> {
+    store.load(id)?; // unknown id → "no such container"
+    let pid = match store.load_state(id)? {
+        Some(state) if state.is_running(store.is_supervised(id)?) => state.pid,
+        _ => None,
+    }
+    .ok_or_else(|| RuntimeError::NotRunning(id.to_string()))?;
+    let signal = Signal::try_from(sig).map_err(|_| RuntimeError::Unsupported(format!("invalid signal number {sig}")))?;
+    match kill(Pid::from_raw(pid as i32), signal) {
+        Ok(()) => Ok(()),
+        Err(Errno::ESRCH) => Err(RuntimeError::NotRunning(id.to_string())), // exited just now
+        Err(e) => Err(RuntimeError::Io { context: format!("cannot signal container {id}"), source: e.into() }),
+    }
+}
+
+/// Stops a container: SIGTERM, then SIGKILL if it is still there after
+/// `timeout`. Stopping a container that is not running succeeds.
+pub fn stop_container(store: &ContainerStore, id: &str, timeout: Duration) -> Result<()> {
+    match signal_container(store, id, Signal::SIGTERM as i32) {
+        Ok(()) => {}
+        Err(RuntimeError::NotRunning(_)) => return Ok(()),
+        Err(e) => return Err(e),
+    }
+    if store.wait_exit(id, Some(timeout))? {
+        return Ok(());
+    }
+    match signal_container(store, id, Signal::SIGKILL as i32) {
+        Ok(()) | Err(RuntimeError::NotRunning(_)) => {}
+        Err(e) => return Err(e),
+    }
+    if store.wait_exit(id, Some(KILL_GRACE))? {
+        Ok(())
+    } else {
+        Err(RuntimeError::Unsupported(format!("container {id} did not exit after SIGKILL")))
+    }
+}
+
+/// Removes a container and its root filesystem. A running container is
+/// refused unless `force`, which kills it first. The supervisor lock is held
+/// during removal so nobody can start the container meanwhile.
+pub fn remove_container(store: &ContainerStore, id: &str, force: bool) -> Result<()> {
+    store.load(id)?;
+    if store.is_supervised(id)? {
+        if !force {
+            return Err(RuntimeError::StillRunning(id.to_string()));
+        }
+        match signal_container(store, id, Signal::SIGKILL as i32) {
+            Ok(()) | Err(RuntimeError::NotRunning(_)) => {}
+            Err(e) => return Err(e),
+        }
+        if !store.wait_exit(id, Some(KILL_GRACE))? {
+            return Err(RuntimeError::Unsupported(format!("container {id} did not exit after SIGKILL")));
+        }
+    }
+    let Some(_lock) = store.try_acquire(id)? else {
+        return Err(RuntimeError::StillRunning(id.to_string()));
+    };
+    store.remove(id)
 }

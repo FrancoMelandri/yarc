@@ -1,8 +1,10 @@
 mod cli;
 mod commands;
+mod control;
 mod detached;
 mod root;
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -35,14 +37,23 @@ fn run() -> Result<u8> {
     };
     match cli.command {
         Command::Run(args) => commands::run(&root, args),
-        Command::Container(ContainerCommand::Start(args)) => commands::container_start(&root, args),
         Command::Pull(args) => commands::pull(&root, args).map(|()| 0),
         Command::Image(ImageCommand::Unpack(args)) => commands::unpack(&root, args).map(|()| 0),
         Command::Create(args) => commands::create(&root, args).map(|()| 0),
-        Command::Container(ContainerCommand::Logs(args)) => commands::container_logs(&root, args).map(|()| 0),
-        Command::Container(ContainerCommand::Ls) => commands::container_ls(&root, true).map(|()| 0),
         Command::Ps(args) => commands::container_ls(&root, args.all).map(|()| 0),
         Command::Shim(args) => detached::shim(&root, args).map(|()| 0),
-        Command::Container(ContainerCommand::Rm(args)) => commands::container_rm(&root, args).map(|()| 0),
+        Command::Container(cmd) | Command::Direct(cmd) => container(&root, cmd),
+    }
+}
+
+fn container(root: &Path, cmd: ContainerCommand) -> Result<u8> {
+    match cmd {
+        ContainerCommand::Ls => commands::container_ls(root, true).map(|()| 0),
+        ContainerCommand::Start(args) => commands::container_start(root, args),
+        ContainerCommand::Stop(args) => control::stop(root, args).map(|()| 0),
+        ContainerCommand::Kill(args) => control::kill(root, args).map(|()| 0),
+        ContainerCommand::Wait(args) => control::wait(root, args).map(|()| 0),
+        ContainerCommand::Logs(args) => commands::container_logs(root, args).map(|()| 0),
+        ContainerCommand::Rm(args) => control::rm(root, args).map(|()| 0),
     }
 }

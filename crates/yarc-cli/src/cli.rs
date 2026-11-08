@@ -31,9 +31,11 @@ pub enum Command {
     /// Internal: supervises one detached container
     #[command(name = "__shim", hide = true)]
     Shim(ShimArgs),
-    /// Work with containers
+    /// Work with containers (the same commands also work without `container`)
     #[command(subcommand)]
     Container(ContainerCommand),
+    #[command(flatten)]
+    Direct(ContainerCommand),
 }
 
 #[derive(Debug, Args)]
@@ -111,10 +113,45 @@ pub enum ContainerCommand {
     Ls,
     /// Start a created container in the foreground (Linux only)
     Start(StartArgs),
+    /// Stop running containers: SIGTERM, then SIGKILL after a timeout
+    Stop(StopArgs),
+    /// Send a signal to running containers (default SIGKILL)
+    Kill(KillArgs),
+    /// Block until containers exit and print their exit codes
+    Wait(WaitArgs),
     /// Show what a container printed
     Logs(LogsArgs),
     /// Remove containers and their root filesystems
     Rm(RmArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct StopArgs {
+    /// Seconds to wait after SIGTERM before sending SIGKILL
+    #[arg(short = 't', long, default_value_t = 10, value_name = "SECONDS")]
+    pub time: u64,
+
+    /// Container ids or names
+    #[arg(required = true)]
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct KillArgs {
+    /// Signal name (TERM, SIGUSR1, ...) or number
+    #[arg(short = 's', long, default_value = "KILL", value_name = "SIGNAL")]
+    pub signal: String,
+
+    /// Container ids or names
+    #[arg(required = true)]
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct WaitArgs {
+    /// Container ids or names
+    #[arg(required = true)]
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -143,10 +180,18 @@ pub struct LogsArgs {
     /// Prefix each line with its timestamp
     #[arg(short = 't', long)]
     pub timestamps: bool,
+
+    /// Keep streaming new output until the container exits
+    #[arg(short = 'f', long)]
+    pub follow: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct RmArgs {
+    /// Kill running containers first
+    #[arg(short = 'f', long)]
+    pub force: bool,
+
     /// Container ids or names
     #[arg(required = true)]
     pub ids: Vec<String>,
@@ -309,6 +354,36 @@ mod tests {
         let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "--tail", "5", "-t", "web"]).unwrap().command else { panic!() };
         assert_eq!((a.tail, a.timestamps), (Some(5), true));
         assert!(parse(&["container", "logs", "--tail", "x", "web"]).is_err());
+    }
+
+    #[test]
+    fn control_commands() {
+        let Command::Container(ContainerCommand::Stop(a)) = parse(&["container", "stop", "a", "b"]).unwrap().command else { panic!() };
+        assert_eq!((a.time, a.ids.as_slice()), (10, &["a".to_string(), "b".to_string()][..]));
+        let Command::Container(ContainerCommand::Stop(a)) = parse(&["container", "stop", "-t", "3", "a"]).unwrap().command else { panic!() };
+        assert_eq!(a.time, 3);
+        let Command::Container(ContainerCommand::Kill(a)) = parse(&["container", "kill", "a"]).unwrap().command else { panic!() };
+        assert_eq!(a.signal, "KILL");
+        let Command::Container(ContainerCommand::Kill(a)) = parse(&["container", "kill", "-s", "USR1", "a"]).unwrap().command else { panic!() };
+        assert_eq!(a.signal, "USR1");
+        let Command::Container(ContainerCommand::Wait(a)) = parse(&["container", "wait", "a"]).unwrap().command else { panic!() };
+        assert_eq!(a.ids, ["a"]);
+        let Command::Container(ContainerCommand::Rm(a)) = parse(&["container", "rm", "-f", "a"]).unwrap().command else { panic!() };
+        assert!(a.force);
+        let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "-f", "a"]).unwrap().command else { panic!() };
+        assert!(a.follow);
+        for bad in [&["container", "stop"][..], &["container", "kill"], &["container", "wait"], &["container", "stop", "-t", "x", "a"]] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn container_commands_also_work_without_the_container_prefix() {
+        assert!(matches!(parse(&["stop", "a"]).unwrap().command, Command::Direct(ContainerCommand::Stop(_))));
+        assert!(matches!(parse(&["logs", "-f", "a"]).unwrap().command, Command::Direct(ContainerCommand::Logs(_))));
+        assert!(matches!(parse(&["rm", "-f", "a"]).unwrap().command, Command::Direct(ContainerCommand::Rm(_))));
+        assert!(matches!(parse(&["start", "-d", "a"]).unwrap().command, Command::Direct(ContainerCommand::Start(_))));
+        assert!(matches!(parse(&["ls"]).unwrap().command, Command::Direct(ContainerCommand::Ls)));
     }
 
     #[test]

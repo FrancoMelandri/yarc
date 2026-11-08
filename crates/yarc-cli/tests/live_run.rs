@@ -353,3 +353,146 @@ fn a_container_does_not_inherit_ignored_sigpipe() {
     assert_eq!(code, 0);
     assert_eq!(out, "y\ndone\n", "stderr: {err}");
 }
+
+fn run_bg(r: &std::path::Path, name: &str, script: &str) {
+    let out = yarc(r, &["run", "-d", "--name", name, IMAGE, "sh", "-c", script]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+}
+
+#[test]
+#[ignore]
+fn stop_lets_a_container_that_handles_sigterm_exit_cleanly() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    run_bg(r, "t", "trap 'echo got term; exit 0' TERM; echo ready; while true; do sleep 0.2; done");
+    eventually("ready", || text(&yarc(r, &["logs", "t"]).stdout).contains("ready"));
+    let started = std::time::Instant::now();
+    let out = yarc(r, &["stop", "t"]);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout).trim(), "t");
+    assert!(started.elapsed() < Duration::from_secs(5), "a handled SIGTERM must not wait for the timeout");
+    assert!(ps(r, true).contains("Exited (0)"), "{}", ps(r, true));
+    assert!(text(&yarc(r, &["logs", "t"]).stdout).contains("got term"));
+    // stopping again is fine
+    assert_eq!(yarc(r, &["stop", "t"]).status.code(), Some(0));
+}
+
+#[test]
+#[ignore]
+fn stop_escalates_to_sigkill_after_the_timeout() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    // `sleep` as PID 1 has no SIGTERM handler, so the signal is ignored.
+    assert_eq!(yarc(r, &["run", "-d", "--name", "k", IMAGE, "sleep", "100"]).status.code(), Some(0));
+    let started = std::time::Instant::now();
+    assert_eq!(yarc(r, &["stop", "-t", "1", "k"]).status.code(), Some(0));
+    assert!(started.elapsed() >= Duration::from_secs(1), "waited for the timeout");
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert!(ps(r, true).contains("Exited (137)"), "{}", ps(r, true));
+}
+
+#[test]
+#[ignore]
+fn kill_sends_the_requested_signal_and_defaults_to_sigkill() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    run_bg(r, "s", "trap 'echo usr1' USR1; echo ready; while true; do sleep 0.2; done");
+    eventually("ready", || text(&yarc(r, &["logs", "s"]).stdout).contains("ready"));
+    assert_eq!(yarc(r, &["kill", "-s", "SIGUSR1", "s"]).status.code(), Some(0));
+    eventually("the trap to run", || text(&yarc(r, &["logs", "s"]).stdout).contains("usr1"));
+    assert!(ps(r, false).contains("Running"), "USR1 does not stop it");
+    assert_eq!(yarc(r, &["kill", "s"]).status.code(), Some(0));
+    eventually("exit", || ps(r, true).contains("Exited (137)"));
+
+    let again = yarc(r, &["kill", "s"]);
+    assert!(!again.status.success());
+    assert!(text(&again.stderr).contains("not running"), "{}", text(&again.stderr));
+    let bad = yarc(r, &["kill", "-s", "NOPE", "s"]);
+    assert!(text(&bad.stderr).contains("unknown signal"), "{}", text(&bad.stderr));
+}
+
+#[test]
+#[ignore]
+fn rm_refuses_running_containers_unless_forced() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    assert_eq!(yarc(r, &["run", "-d", "--name", "busy", IMAGE, "sleep", "100"]).status.code(), Some(0));
+    let refused = yarc(r, &["rm", "busy"]);
+    assert!(!refused.status.success());
+    assert!(text(&refused.stderr).contains("is running"), "{}", text(&refused.stderr));
+    assert!(ps(r, false).contains("busy"), "still there");
+
+    let forced = yarc(r, &["rm", "-f", "busy"]);
+    assert_eq!(forced.status.code(), Some(0), "{}", text(&forced.stderr));
+    assert!(!ps(r, true).contains("busy"));
+    assert!(!r.join("containers/busy").exists());
+
+    let gone = yarc(r, &["rm", "busy"]);
+    assert!(text(&gone.stderr).contains("no such container"), "{}", text(&gone.stderr));
+}
+
+#[test]
+#[ignore]
+fn wait_prints_the_exit_code() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    run_bg(r, "w", "sleep 1; exit 5");
+    let out = yarc(r, &["wait", "w"]);
+    assert_eq!((out.status.code(), text(&out.stdout).trim().to_string()), (Some(0), "5".to_string()));
+    // an already finished container answers immediately
+    assert_eq!(text(&yarc(r, &["wait", "w"]).stdout).trim(), "5");
+    // never started
+    yarc(r, &["create", "--name", "fresh", IMAGE, "true"]);
+    let out = yarc(r, &["wait", "fresh"]);
+    assert!(text(&out.stderr).contains("has not been started"), "{}", text(&out.stderr));
+}
+
+#[test]
+#[ignore]
+fn logs_follow_streams_until_the_container_exits() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    run_bg(r, "f", "for i in 1 2 3; do echo line $i; sleep 0.5; done; echo end >&2");
+    let mut follower = Command::new(env!("CARGO_BIN_EXE_yarc"))
+        .arg("--root")
+        .arg(r)
+        .args(["logs", "-f", "f"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(s) = follower.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = follower.kill();
+            panic!("logs -f did not end after the container exited");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(status.success());
+    let out = follower.wait_with_output().unwrap();
+    assert_eq!(text(&out.stdout), "line 1\nline 2\nline 3\n");
+    assert_eq!(text(&out.stderr), "end\n");
+}
+
+#[test]
+#[ignore]
+fn the_whole_lifecycle_with_unprefixed_commands() {
+    let root = tempfile::tempdir().unwrap();
+    let r = root.path();
+    let id = text(&yarc(r, &["create", "--name", "life", IMAGE, "sh", "-c", "echo hello; sleep 100"]).stdout);
+    assert_eq!(id.trim(), "life");
+    assert!(ps(r, true).contains("Created"));
+    assert_eq!(yarc(r, &["start", "-d", "life"]).status.code(), Some(0));
+    eventually("running", || ps(r, false).contains("Running"));
+    eventually("output", || text(&yarc(r, &["logs", "life"]).stdout) == "hello\n");
+    assert_eq!(yarc(r, &["stop", "-t", "1", "life"]).status.code(), Some(0));
+    assert!(ps(r, true).contains("Exited (137)"));
+    assert_eq!(yarc(r, &["start", "-d", "life"]).status.code(), Some(0));
+    eventually("second run", || text(&yarc(r, &["logs", "life"]).stdout) == "hello\nhello\n");
+    assert_eq!(yarc(r, &["rm", "-f", "life"]).status.code(), Some(0));
+    assert_eq!(text(&yarc(r, &["ps", "-a"]).stdout).lines().count(), 1);
+}

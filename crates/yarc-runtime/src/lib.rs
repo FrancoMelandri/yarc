@@ -28,10 +28,10 @@ use std::os::fd::OwnedFd;
 pub use container::ContainerStore;
 pub use error::{Result, RuntimeError};
 #[cfg(target_os = "linux")]
-pub use lifecycle::{run_recorded, run_recorded_with, Launch};
+pub use lifecycle::{remove_container, run_recorded, run_recorded_with, signal_container, stop_container, Launch};
 #[cfg(target_os = "linux")]
 pub use linux::{process_alive, start, Running};
-pub use logs::{format_timestamp, read_log, LogEntry, LogWriter, Stream};
+pub use logs::{format_timestamp, read_log, read_log_from, LogEntry, LogWriter, Stream};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
 pub use spec::{resolve_process, ContainerSpec, ImageDefaults, Network, Overrides, Process, DEFAULT_PATH};
 pub use state::{describe, now_ms, ContainerState, Status};

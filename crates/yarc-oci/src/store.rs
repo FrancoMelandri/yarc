@@ -18,7 +18,17 @@ use sha2::{Digest as _, Sha256};
 
 use crate::digest::Digest;
 use crate::error::{OciError, Result};
+use crate::manifest::{parse_config, parse_manifest, ImageConfig, ImageManifest, Manifest};
 use crate::reference::Reference;
+
+/// A fully pulled image, read back from the store.
+#[derive(Debug, Clone)]
+pub struct StoredImage {
+    pub reference: Reference,
+    pub manifest_digest: Digest,
+    pub manifest: ImageManifest,
+    pub config: ImageConfig,
+}
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const BUF_SIZE: usize = 64 * 1024;
@@ -37,7 +47,7 @@ impl Drop for TmpGuard {
     }
 }
 
-fn io_err(path: &Path) -> impl Fn(io::Error) -> OciError + '_ {
+pub(crate) fn io_err(path: &Path) -> impl Fn(io::Error) -> OciError + '_ {
     move |e| OciError::Io { path: path.display().to_string(), msg: e.to_string() }
 }
 
@@ -186,6 +196,21 @@ impl BlobStore {
             .and_then(|d| d.as_str())
             .ok_or_else(|| json_err("missing 'digest'".into()))?;
         Digest::parse(d).map(Some)
+    }
+
+    /// Load a pulled image (manifest + config) by reference.
+    pub fn load_image(&self, reference: &Reference) -> Result<StoredImage> {
+        let manifest_digest = self
+            .get_ref(reference)?
+            .ok_or_else(|| OciError::NotFound(reference.to_string()))?;
+        let manifest = match parse_manifest(&self.read_blob(&manifest_digest)?)? {
+            Manifest::Image(m) => m,
+            Manifest::Index(_) => {
+                return Err(OciError::Unsupported("stored manifest is an image index".into()))
+            }
+        };
+        let config = parse_config(&self.read_blob(&Digest::parse(&manifest.config.digest)?)?)?;
+        Ok(StoredImage { reference: reference.clone(), manifest_digest, manifest, config })
     }
 }
 

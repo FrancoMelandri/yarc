@@ -5,6 +5,16 @@ edition.workspace = true
 license.workspace = true
 description = "yarc command line (host side)"
 
+[[bin]]
+name = "yarc"
+path = "src/main.rs"
+
 [dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
 yarc-config = { path = "../yarc-config" }
+yarc-oci = { path = "../yarc-oci" }
 yarc-proto = { path = "../yarc-proto" }
+
+[dev-dependencies]
+tempfile = "3"

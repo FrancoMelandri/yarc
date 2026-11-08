@@ -14,6 +14,8 @@ pub mod pull;
 pub mod reference;
 pub mod store;
 pub mod transport;
+#[cfg(unix)]
+pub mod unpack;
 
 #[cfg(test)]
 mod testutil;
@@ -24,5 +26,7 @@ pub use error::{OciError, Result};
 pub use manifest::{ContainerConfig, Descriptor, ImageConfig, ImageManifest, Platform};
 pub use pull::{pull, PullReport};
 pub use reference::{Reference, Target};
-pub use store::BlobStore;
+pub use store::{BlobStore, StoredImage};
+#[cfg(unix)]
+pub use unpack::{unpack_image, unpack_layer, UnpackReport};
 pub use transport::{Response, Transport, UreqTransport};

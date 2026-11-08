@@ -67,8 +67,20 @@ pub struct CreateArgs {
 pub enum ContainerCommand {
     /// List containers
     Ls,
+    /// Start a created container in the foreground (Linux only)
+    Start(StartArgs),
     /// Remove containers and their root filesystems
     Rm(RmArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct StartArgs {
+    /// Container id or name
+    pub id: String,
+
+    /// Print the setup plan and skipped optional steps
+    #[arg(long)]
+    pub debug: bool,
 }
 
 #[derive(Debug, Args)]
@@ -171,6 +183,15 @@ mod tests {
         let Command::Container(ContainerCommand::Rm(a)) = parse(&["container", "rm", "a", "b"]).unwrap().command else { panic!() };
         assert_eq!(a.ids, ["a", "b"]);
         assert!(parse(&["container", "rm"]).is_err());
+    }
+
+    #[test]
+    fn container_start() {
+        let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "web"]).unwrap().command else { panic!() };
+        assert_eq!((a.id.as_str(), a.debug), ("web", false));
+        let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "--debug", "web"]).unwrap().command else { panic!() };
+        assert!(a.debug);
+        assert!(parse(&["container", "start"]).is_err());
     }
 
     #[test]

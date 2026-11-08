@@ -14,6 +14,12 @@ pub enum RuntimeError {
     AlreadyExists(String),
     #[error("no such container: {0}")]
     NotFound(String),
+    #[error("{0}")]
+    Unsupported(String),
+    #[error("refusing to use '{0}' inside the rootfs: it goes through a symlink or '..'")]
+    UnsafePath(String),
+    #[error("cannot start container: {0}")]
+    Start(String),
     #[error("{context}: {source}")]
     Io { context: String, source: std::io::Error },
     #[error("invalid container config {path}: {source}")]

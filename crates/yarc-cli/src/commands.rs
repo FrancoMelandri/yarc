@@ -108,6 +108,23 @@ pub fn container_ls(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Runs a created container in the foreground; the result is yarc's exit code.
+pub fn container_start(root: &Path, args: crate::cli::StartArgs) -> Result<u8> {
+    let containers = yarc_runtime::ContainerStore::open(root)?;
+    let spec = containers.load(&args.id)?;
+    if !spec.rootfs.is_dir() {
+        anyhow::bail!("the root filesystem of container {} is missing ({})", spec.id, spec.rootfs.display());
+    }
+    if args.debug {
+        eprintln!("yarc: setup plan for {}:", spec.id);
+        for op in yarc_runtime::mount_plan(&spec) {
+            eprintln!("  {op:?}");
+        }
+    }
+    let code = yarc_runtime::run(&spec, &yarc_runtime::RunOptions { debug: args.debug })?;
+    Ok((code & 0xff) as u8)
+}
+
 #[cfg(unix)]
 pub fn container_rm(root: &Path, args: RmArgs) -> Result<()> {
     let containers = yarc_runtime::ContainerStore::open(root)?;

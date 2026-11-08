@@ -114,6 +114,16 @@ fn split_env(entry: &str) -> Option<(String, String)> {
     (!k.is_empty()).then(|| (k.to_string(), v.to_string()))
 }
 
+/// A host directory or file mounted into the container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeSpec {
+    /// Absolute path on the host; must exist when the container starts.
+    pub source: PathBuf,
+    /// Absolute path inside the container.
+    pub target: String,
+    pub read_only: bool,
+}
+
 pub const DEFAULT_HEALTH_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_HEALTH_RETRIES: u32 = 3;
 
@@ -166,9 +176,16 @@ pub struct ContainerSpec {
     /// `/etc/hosts` (maps service names to the shared loopback).
     #[serde(default)]
     pub hosts_file: Option<PathBuf>,
+    #[serde(default)]
+    pub volumes: Vec<VolumeSpec>,
 }
 
 impl ContainerSpec {
+    pub fn with_volumes(mut self, volumes: Vec<VolumeSpec>) -> Self {
+        self.volumes = volumes;
+        self
+    }
+
     /// Puts the container in a project's shared network namespace.
     pub fn in_project_network(mut self, project_net: PathBuf, hosts_file: PathBuf) -> Self {
         self.network = Network::Project;
@@ -202,6 +219,7 @@ impl ContainerSpec {
             health: None,
             project_net: None,
             hosts_file: None,
+            volumes: Vec::new(),
         }
     }
 }
@@ -346,6 +364,18 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
         value.as_object_mut().unwrap().remove("health");
         assert_eq!(serde_json::from_value::<ContainerSpec>(value).unwrap().health, None);
+    }
+
+    #[test]
+    fn volumes_roundtrip_and_are_optional_in_old_configs() {
+        let p = Process { args: s(&["x"]), env: vec![], working_dir: "/".into(), user: None };
+        let vol = VolumeSpec { source: "/data".into(), target: "/var/lib/x".into(), read_only: true };
+        let spec = ContainerSpec::new("c", "img", "/r".into(), p, Network::Host).with_volumes(vec![vol.clone()]);
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(serde_json::from_str::<ContainerSpec>(&json).unwrap().volumes, vec![vol]);
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value.as_object_mut().unwrap().remove("volumes");
+        assert!(serde_json::from_value::<ContainerSpec>(value).unwrap().volumes.is_empty());
     }
 
     #[test]

@@ -139,6 +139,18 @@ pub fn mount_plan(spec: &ContainerSpec) -> Vec<SetupOp> {
     if spec.network == Network::Host {
         plan.push(SetupOp::CopyHost { source: PathBuf::from("/etc/resolv.conf"), path: "etc/resolv.conf".into() });
     }
+    // User volumes last, so they win over anything generated above. A file is
+    // mounted as a file, anything else as a directory.
+    for volume in &spec.volumes {
+        plan.push(SetupOp::Bind {
+            source: volume.source.clone(),
+            target: volume.target.trim_start_matches('/').to_string(),
+            kind: if volume.source.is_file() { BindKind::File } else { BindKind::Dir },
+            recursive: true,
+            opts: MountOpts { readonly: volume.read_only, ..Default::default() },
+            optional: false,
+        });
+    }
     plan
 }
 
@@ -238,6 +250,27 @@ mod tests {
         let has = |plan: &[SetupOp]| plan.iter().any(|op| matches!(op, SetupOp::CopyHost { path, .. } if path == "etc/resolv.conf"));
         assert!(has(&mount_plan(&spec(Network::Host))));
         assert!(!has(&mount_plan(&spec(Network::None))));
+    }
+
+    #[test]
+    fn volumes_are_bound_last_files_as_files_and_directories_as_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("app.conf");
+        std::fs::write(&file, "x").unwrap();
+        let data = dir.path().join("data");
+        std::fs::create_dir(&data).unwrap();
+        let mut s = spec(Network::Host);
+        s.volumes = vec![
+            crate::spec::VolumeSpec { source: data.clone(), target: "/var/lib/app".into(), read_only: false },
+            crate::spec::VolumeSpec { source: file.clone(), target: "/etc/app.conf".into(), read_only: true },
+        ];
+        let plan = mount_plan(&s);
+        let n = plan.len();
+        assert!(matches!(&plan[n - 2], SetupOp::Bind { source, target, kind: BindKind::Dir, opts, optional: false, .. }
+            if source == &data && target == "var/lib/app" && !opts.readonly));
+        assert!(matches!(&plan[n - 1], SetupOp::Bind { source, target, kind: BindKind::File, opts, optional: false, .. }
+            if source == &file && target == "etc/app.conf" && opts.readonly));
+        assert!(mount_plan(&spec(Network::Host)).iter().all(|op| !matches!(op, SetupOp::Bind { target, .. } if target.starts_with("var"))));
     }
 
     #[test]

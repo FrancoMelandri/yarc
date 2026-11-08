@@ -47,7 +47,7 @@ fn run() -> Result<u8> {
         Command::Shim(args) => detached::shim(&root, args).map(|()| 0),
         Command::Holder(args) => detached::holder(&root, args).map(|()| 0),
         Command::Up(args) => project::up(&root, &opts, args.detach),
-        Command::Down(args) => project::down(&root, &opts, Duration::from_secs(args.time)).map(|()| 0),
+        Command::Down(args) => project::down(&root, &opts, Duration::from_secs(args.time), args.volumes).map(|()| 0),
         Command::Project(cmd) => match cmd {
             ProjectCommand::Ps => project::ps(&root, &opts).map(|()| 0),
             ProjectCommand::Logs(args) => project::logs(&root, &opts, args).map(|()| 0),

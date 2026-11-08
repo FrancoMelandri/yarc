@@ -135,14 +135,113 @@ pub fn format_ports(ports: &[PortMapping]) -> String {
 }
 
 /// Bump when the way containers are wired up changes in a way that requires
-/// recreating them (1: host network, 2: shared project network).
-const NETWORK_MODEL: u32 = 2;
+/// recreating them (1: host network, 2: shared project network, 3: volumes).
+const WIRING_MODEL: u32 = 3;
+
+/// Lexically normalizes a path: drops `.` and resolves `..` (no symlink lookups,
+/// the path may not exist yet).
+fn clean_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Above the root there is nothing: `/..` is `/`. A relative path
+                // may start with `..`s.
+                if !out.pop() && !out.has_root() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// `pgdata:/var/lib/postgresql/data:ro` as written in the file.
+pub fn format_volume(v: &yarc_config::VolumeMount) -> String {
+    let source = match &v.source {
+        yarc_config::VolumeSource::Host(p) | yarc_config::VolumeSource::Named(p) => p,
+    };
+    format!("{source}:{}{}", v.target, if v.read_only { ":ro" } else { "" })
+}
+
+/// Where the data of a volume lives on the host, and where it appears in the
+/// container. Relative host paths are relative to the project file's directory,
+/// `~` is the home directory, named volumes live in `<volumes_dir>/<project>_<name>`.
+pub fn resolve_volume(
+    base: &Path,
+    volumes_dir: &Path,
+    project: &str,
+    home: Option<&Path>,
+    v: &yarc_config::VolumeMount,
+) -> Result<yarc_runtime::VolumeSpec> {
+    let invalid = |why: &str| anyhow!("volume '{}': {why}", format_volume(v));
+    if v.target == "/" || Path::new(&v.target).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return Err(invalid("the target must be a directory or file inside the container, without '..'"));
+    }
+    let source = match &v.source {
+        yarc_config::VolumeSource::Named(name) => {
+            if !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) || name.starts_with('.') {
+                return Err(invalid("a volume name may only contain letters, digits, '_', '.' and '-'"));
+            }
+            volumes_dir.join(format!("{project}_{name}"))
+        }
+        yarc_config::VolumeSource::Host(path) => {
+            let p = if path == "~" || path.starts_with("~/") {
+                let home = home.ok_or_else(|| invalid("'~' needs the HOME environment variable"))?;
+                home.join(path.trim_start_matches('~').trim_start_matches('/'))
+            } else if path.starts_with('/') {
+                PathBuf::from(path)
+            } else {
+                base.join(path)
+            };
+            clean_path(&p)
+        }
+    };
+    Ok(yarc_runtime::VolumeSpec { source, target: v.target.clone(), read_only: v.read_only })
+}
+
+/// Resolves every volume of a service and creates the host directories that do
+/// not exist yet (like `docker run -v` does).
+#[cfg(target_os = "linux")]
+fn prepare_volumes(root: &Path, loaded: &Loaded, def: &Service) -> Result<Vec<yarc_runtime::VolumeSpec>> {
+    let base = loaded.file.parent().unwrap_or(Path::new("."));
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut specs = Vec::new();
+    for v in &def.volumes {
+        let spec = resolve_volume(base, &root.join("volumes"), &loaded.name, home.as_deref(), v)?;
+        if !spec.source.exists() {
+            std::fs::create_dir_all(&spec.source).with_context(|| format!("cannot create {}", spec.source.display()))?;
+        }
+        specs.push(spec);
+    }
+    Ok(specs)
+}
+
+/// Host directories of the project's named volumes (what `down -v` deletes).
+pub fn named_volume_dirs(root: &Path, loaded: &Loaded) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = loaded
+        .project
+        .services
+        .values()
+        .flat_map(|s| s.volumes.iter())
+        .filter_map(|v| match &v.source {
+            yarc_config::VolumeSource::Named(n) => Some(root.join("volumes").join(format!("{}_{n}", loaded.name))),
+            yarc_config::VolumeSource::Host(_) => None,
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
 
 /// Hash of everything that, when changed, requires a new container. `needs` is
 /// left out on purpose: it only affects start order.
 pub fn service_hash(service: &Service) -> String {
     let canonical = format!(
-        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|net{NETWORK_MODEL}",
+        "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|wiring{WIRING_MODEL}",
         service.image, service.cmd, service.env, service.ports, service.volumes, service.health
     );
     Digest::of(canonical.as_bytes()).hex().to_string()
@@ -242,6 +341,10 @@ pub fn config(opts: &Opts) -> Result<()> {
         println!("  {name:<width$}  {}  image {}{needs}", container_name(&loaded.name, name), svc.image);
         if !svc.ports.is_empty() {
             println!("  {:<width$}  ports {}", "", format_ports(&svc.ports));
+        }
+        if !svc.volumes.is_empty() {
+            let list: Vec<String> = svc.volumes.iter().map(format_volume).collect();
+            println!("  {:<width$}  volumes {}", "", list.join(", "));
         }
     }
     Ok(())
@@ -392,9 +495,13 @@ enum Action {
 /// Brings one service up; returns the log offset from which this run's output
 /// starts (so a foreground `up` does not replay earlier runs).
 #[cfg(target_os = "linux")]
-fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, project: &str, service: &str, def: &Service) -> Result<u64> {
+fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Loaded, service: &str, def: &Service) -> Result<u64> {
     use crate::commands::{create_new, NewContainer};
 
+    let project = loaded.name.as_str();
+    // Directories for new volumes are created even when the container is only
+    // started again: a volume may have been removed by hand in the meantime.
+    let volumes = prepare_volumes(root, loaded, def)?;
     let cname = container_name(project, service);
     let hash = service_hash(def);
     let action = match store.load(&cname) {
@@ -424,6 +531,7 @@ fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, project: &s
                 },
                 network: yarc_runtime::Network::Project,
                 project_net: Some((net.dir().to_path_buf(), net.hosts_path())),
+                volumes,
                 labels: labels(project, service, &hash),
                 health: def.health.as_ref().map(|h| yarc_runtime::HealthSpec::shell(&h.cmd, h.interval)),
             },
@@ -494,9 +602,6 @@ fn warn_unsupported(loaded: &Loaded) {
         let svc = &loaded.project.services[name];
         if svc.ports.iter().any(|p| p.protocol == Protocol::Udp) {
             eprintln!("warning: {name}: only TCP ports are published; UDP mappings are ignored");
-        }
-        if !svc.volumes.is_empty() {
-            eprintln!("warning: {name}: volumes are not mounted yet");
         }
     }
 }
@@ -588,7 +693,7 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
         if interrupted {
             break;
         }
-        let offset = up_service(root, &store, &net, &loaded.name, service, &loaded.project.services[service])
+        let offset = up_service(root, &store, &net, &loaded, service, &loaded.project.services[service])
             .with_context(|| format!("service {service}"))?;
         sources.push(Source { label: service.clone(), id: container_name(&loaded.name, service), offset });
     }
@@ -611,8 +716,15 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
 /// `yarc down`: stops and removes every container of the project, dependents
 /// first, including containers of services that were removed from the file.
 #[cfg(target_os = "linux")]
-pub fn down(root: &Path, opts: &Opts, timeout: Duration) -> Result<()> {
+pub fn down(root: &Path, opts: &Opts, timeout: Duration, volumes: bool) -> Result<()> {
     let name = project_name(opts)?;
+    // Read the file first: without it we could not tell which volumes are ours.
+    let named_volumes = if volumes {
+        let loaded = load(opts).context("`down --volumes` needs the project file to know its volumes")?;
+        named_volume_dirs(root, &loaded)
+    } else {
+        Vec::new()
+    };
     let store = ContainerStore::open(root)?;
     let mut specs = project_containers(&store, &name)?;
     sort_by_service_order(&mut specs, &shutdown_order(opts), true);
@@ -630,6 +742,13 @@ pub fn down(root: &Path, opts: &Opts, timeout: Duration) -> Result<()> {
         yarc_runtime::stop_holder(&net, Duration::from_secs(5))?;
         net.remove()?;
         eprintln!("project {name}: network removed");
+    }
+    for dir in named_volumes {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => eprintln!("project {name}: volume {} removed", dir.file_name().and_then(|n| n.to_str()).unwrap_or("?")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow!("cannot remove volume {}: {e}", dir.display())),
+        }
     }
     Ok(())
 }
@@ -658,7 +777,7 @@ mod unsupported {
     pub fn up(_root: &Path, _opts: &Opts, _detach: bool) -> Result<u8> {
         anyhow::bail!(MSG)
     }
-    pub fn down(_root: &Path, _opts: &Opts, _timeout: Duration) -> Result<()> {
+    pub fn down(_root: &Path, _opts: &Opts, _timeout: Duration, _volumes: bool) -> Result<()> {
         anyhow::bail!(MSG)
     }
     pub fn stop(_root: &Path, _opts: &Opts, _timeout: Duration) -> Result<()> {
@@ -751,6 +870,57 @@ mod tests {
         let p = project("services:\n  a: { image: x, ports: ['8080:80', '5353:53/udp'] }\n");
         assert_eq!(format_ports(&p.services["a"].ports), "127.0.0.1:8080->80/tcp, 5353->53/udp (not published)");
         assert_eq!(format_ports(&[]), "");
+    }
+
+    fn vol(spec: &str) -> yarc_config::VolumeMount {
+        project(&format!("services:\n  a: {{ image: x, volumes: ['{spec}'] }}\n")).services["a"].volumes[0].clone()
+    }
+
+    #[test]
+    fn volume_sources_are_resolved_against_the_project_the_home_and_the_store() {
+        let (base, vols, home) = (Path::new("/work/app"), Path::new("/store/volumes"), Path::new("/home/me"));
+        let r = |s: &str| resolve_volume(base, vols, "demo", Some(home), &vol(s)).unwrap();
+        assert_eq!(r("./data:/d").source, Path::new("/work/app/data"));
+        assert_eq!(r("../shared:/d").source, Path::new("/work/shared"));
+        assert_eq!(r("./a/../b/./c:/d").source, Path::new("/work/app/b/c"));
+        assert_eq!(r("/abs/path:/d").source, Path::new("/abs/path"));
+        assert_eq!(r("~/cache:/d").source, Path::new("/home/me/cache"));
+        assert_eq!(r("~:/d").source, Path::new("/home/me"));
+
+        let named = r("pgdata:/var/lib/pg:ro");
+        assert_eq!(named.source, Path::new("/store/volumes/demo_pgdata"));
+        assert_eq!((named.target.as_str(), named.read_only), ("/var/lib/pg", true));
+        assert!(!r("./data:/d").read_only);
+    }
+
+    #[test]
+    fn bad_volumes_are_rejected_with_the_volume_in_the_message() {
+        let (base, vols) = (Path::new("/work"), Path::new("/store/volumes"));
+        let err = |s: &str, home: Option<&Path>| resolve_volume(base, vols, "demo", home, &vol(s)).unwrap_err().to_string();
+        assert!(err("./d:/", None).contains("./d:/"), "root as a target");
+        assert!(err("./d:/a/../b", None).contains("without '..'"));
+        assert!(err("~/x:/d", None).contains("HOME"));
+        assert!(err("we ird!:/d", None).contains("volume name"));
+    }
+
+    #[test]
+    fn volumes_are_formatted_as_written_and_named_ones_are_listed_once() {
+        assert_eq!(format_volume(&vol("./data:/d")), "./data:/d");
+        assert_eq!(format_volume(&vol("pg:/d:ro")), "pg:/d:ro");
+
+        let p = project(
+            "services:\n  a: { image: x, volumes: ['store:/s', './host:/h', 'cache:/c'] }\n  b: { image: x, volumes: ['store:/s2:ro'] }\n",
+        );
+        let loaded = Loaded { name: "demo".into(), file: PathBuf::from("/w/yarc.yaml"), order: start_order(&p).unwrap(), project: p };
+        let dirs = named_volume_dirs(Path::new("/root"), &loaded);
+        assert_eq!(dirs, [Path::new("/root/volumes/demo_cache"), Path::new("/root/volumes/demo_store")]);
+    }
+
+    #[test]
+    fn clean_path_is_lexical() {
+        assert_eq!(clean_path(Path::new("/a/./b/../c")), Path::new("/a/c"));
+        assert_eq!(clean_path(Path::new("/../x")), Path::new("/x"));
+        assert_eq!(clean_path(Path::new("a/../../b")), Path::new("../b"));
     }
 
     #[test]

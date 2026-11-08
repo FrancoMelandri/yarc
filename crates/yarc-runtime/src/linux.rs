@@ -456,6 +456,22 @@ pub(crate) fn is_executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
+/// The mount flags of the filesystem holding `path` that cannot be cleared by a
+/// remount in a user namespace.
+fn locked_flags(path: &Path) -> MsFlags {
+    use nix::sys::statvfs::{statvfs, FsFlags};
+    let Ok(stat) = statvfs(path) else { return MsFlags::empty() };
+    let have = stat.flags();
+    let mut out = MsFlags::empty();
+    out.set(MsFlags::MS_NOSUID, have.contains(FsFlags::ST_NOSUID));
+    out.set(MsFlags::MS_NODEV, have.contains(FsFlags::ST_NODEV));
+    out.set(MsFlags::MS_NOEXEC, have.contains(FsFlags::ST_NOEXEC));
+    out.set(MsFlags::MS_NOATIME, have.contains(FsFlags::ST_NOATIME));
+    out.set(MsFlags::MS_NODIRATIME, have.contains(FsFlags::ST_NODIRATIME));
+    out.set(MsFlags::MS_RELATIME, have.contains(FsFlags::ST_RELATIME));
+    out
+}
+
 fn mount_flags(o: MountOpts) -> MsFlags {
     let mut f = MsFlags::empty();
     f.set(MsFlags::MS_NOSUID, o.nosuid);
@@ -491,7 +507,10 @@ fn apply(root: &Path, op: &SetupOp) -> std::result::Result<(), String> {
             mount(Some(source.as_path()), &dest, none, flags, none).map_err(|e| fail("bind-mounting", target, &e))?;
             if opts.readonly {
                 // A bind mount ignores most flags until it is remounted.
-                let remount = flags | MsFlags::MS_REMOUNT | mount_flags(*opts);
+                // Inside a user namespace the flags the source mount already has
+                // (nosuid, nodev, noexec, atime options) are locked: a remount
+                // that drops them fails with EPERM, so carry them over.
+                let remount = flags | MsFlags::MS_REMOUNT | mount_flags(*opts) | locked_flags(source);
                 mount(none, &dest, none, remount, none).map_err(|e| fail("remounting read-only", target, &e))?;
             }
             Ok(())

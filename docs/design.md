@@ -108,7 +108,7 @@ Still to come: `exec`, `restart`.
 3. **M2** run one container on native Linux, rootless (`yarc run alpine echo hi`). ✔
 4. **M3** detached containers: shim, state, logs, `ps/logs/stop/kill/wait/rm`. ✔
 5. **M4** projects: `up/down/project ps|logs|stop|config` (a ✔), exec + healthchecks (b ✔),
-   project network, names and published ports (c ✔), volumes (d).
+   project network, names and published ports (c ✔), volumes (d ✔).
 6. **M5** the agent and Windows via WSL2.
 7. **M6** macOS via Virtualization.framework.
 

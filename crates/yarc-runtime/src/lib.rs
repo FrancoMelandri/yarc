@@ -42,7 +42,7 @@ pub use network::{NetInfo, PortMap, ProjectNet};
 #[cfg(target_os = "linux")]
 pub use netns::{run_holder, stop_holder};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
-pub use spec::{resolve_process, ContainerSpec, HealthSpec, ImageDefaults, Network, Overrides, Process, DEFAULT_PATH};
+pub use spec::{resolve_process, ContainerSpec, HealthSpec, ImageDefaults, Network, Overrides, Process, VolumeSpec, DEFAULT_PATH};
 pub use state::{describe, now_ms, ContainerState, Health, HealthStatus, Status};
 
 /// How to start a container. The descriptors become the container's stdin,

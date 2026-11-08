@@ -68,6 +68,17 @@ pub struct DownArgs {
     /// Seconds to wait after SIGTERM before sending SIGKILL
     #[arg(short = 't', long, default_value_t = 10, value_name = "SECONDS")]
     pub time: u64,
+
+    /// Also delete the project's named volumes (their data is lost)
+    #[arg(short = 'v', long)]
+    pub volumes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct StopProjectArgs {
+    /// Seconds to wait after SIGTERM before sending SIGKILL
+    #[arg(short = 't', long, default_value_t = 10, value_name = "SECONDS")]
+    pub time: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -77,7 +88,7 @@ pub enum ProjectCommand {
     /// Show the project's logs, prefixed with the service name
     Logs(ProjectLogsArgs),
     /// Stop the project's containers (without removing them)
-    Stop(DownArgs),
+    Stop(StopProjectArgs),
     /// Print the resolved project: name, start order, container names
     Config,
 }
@@ -466,7 +477,10 @@ mod tests {
         let cli = parse(&["down", "-t", "2", "--file", "y.yaml", "--project", "p2"]).unwrap();
         assert_eq!((cli.file.as_path(), cli.project.as_deref()), (std::path::Path::new("y.yaml"), Some("p2")));
         let Command::Down(a) = cli.command else { panic!() };
-        assert_eq!(a.time, 2);
+        assert_eq!((a.time, a.volumes), (2, false));
+        let Command::Down(a) = parse(&["down", "-v"]).unwrap().command else { panic!() };
+        assert!(a.volumes);
+        assert!(parse(&["project", "stop", "-v"]).is_err(), "stop never deletes volumes");
         assert!(matches!(parse(&["project", "ps"]).unwrap().command, Command::Project(ProjectCommand::Ps)));
         assert!(matches!(parse(&["project", "config"]).unwrap().command, Command::Project(ProjectCommand::Config)));
         let Command::Project(ProjectCommand::Stop(a)) = parse(&["project", "stop"]).unwrap().command else { panic!() };

@@ -88,6 +88,7 @@ pub struct NewContainer {
     /// A project's network directory and shared hosts file; makes the container
     /// join the project's network (overriding `network`).
     pub project_net: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    pub volumes: Vec<yarc_runtime::VolumeSpec>,
 }
 
 #[cfg(unix)]
@@ -108,6 +109,7 @@ fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
             labels: Default::default(),
             health: None,
             project_net: None,
+            volumes: Vec::new(),
         },
     )
 }
@@ -143,7 +145,8 @@ pub fn create_new(root: &Path, new: NewContainer) -> Result<String> {
         yarc_oci::unpack_image(&store, &reference, &rootfs)?;
         let mut spec = ContainerSpec::new(&id, &new.image, rootfs.clone(), process, new.network)
             .with_labels(new.labels)
-            .with_health(new.health);
+            .with_health(new.health)
+            .with_volumes(new.volumes);
         if let Some((dir, hosts)) = new.project_net {
             spec = spec.in_project_network(dir, hosts);
         }

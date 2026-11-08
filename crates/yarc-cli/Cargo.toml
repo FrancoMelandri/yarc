@@ -15,6 +15,7 @@ clap = { version = "4", features = ["derive", "env"] }
 yarc-config = { path = "../yarc-config" }
 yarc-oci = { path = "../yarc-oci" }
 yarc-proto = { path = "../yarc-proto" }
+yarc-runtime = { path = "../yarc-runtime" }
 
 [dev-dependencies]
 tempfile = "3"

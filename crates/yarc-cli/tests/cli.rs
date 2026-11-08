@@ -48,3 +48,22 @@ fn unpacking_an_unpulled_image_explains_what_to_do() {
     assert!(stderr(&out).contains("yarc pull"), "{}", stderr(&out));
     assert!(!dest.exists(), "nothing is created for a missing image");
 }
+
+#[test]
+fn container_ls_on_an_empty_root_prints_only_the_header() {
+    let root = tempfile::tempdir().unwrap();
+    let out = yarc(&["--root", root.path().to_str().unwrap(), "container", "ls"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(text.contains("CONTAINER ID"));
+}
+
+#[cfg(unix)]
+#[test]
+fn removing_an_unknown_container_fails_clearly() {
+    let root = tempfile::tempdir().unwrap();
+    let out = yarc(&["--root", root.path().to_str().unwrap(), "container", "rm", "ghost"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("no such container: ghost"), "{}", stderr(&out));
+}

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, Command, ImageCommand};
+use cli::{Cli, Command, ContainerCommand, ImageCommand};
 
 fn main() -> ExitCode {
     match run() {
@@ -28,5 +28,8 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Pull(args) => commands::pull(&root, args),
         Command::Image(ImageCommand::Unpack(args)) => commands::unpack(&root, args),
+        Command::Create(args) => commands::create(&root, args),
+        Command::Container(ContainerCommand::Ls) => commands::container_ls(&root),
+        Command::Container(ContainerCommand::Rm(args)) => commands::container_rm(&root, args),
     }
 }

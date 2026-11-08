@@ -815,6 +815,7 @@ dependencies = [
  "yarc-config",
  "yarc-oci",
  "yarc-proto",
+ "yarc-runtime",
 ]
 
 [[package]]
@@ -848,6 +849,12 @@ version = "0.0.1"
 [[package]]
 name = "yarc-runtime"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "zeroize"

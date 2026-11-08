@@ -22,6 +22,60 @@ pub enum Command {
     /// Work with images in the local store
     #[command(subcommand)]
     Image(ImageCommand),
+    /// Create a container from an image without starting it (Linux only)
+    Create(CreateArgs),
+    /// Work with containers
+    #[command(subcommand)]
+    Container(ContainerCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct CreateArgs {
+    /// Container name [default: random id]
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Set an environment variable (repeatable)
+    #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+
+    /// Override the image's entrypoint ("" clears it)
+    #[arg(long, value_name = "CMD")]
+    pub entrypoint: Option<String>,
+
+    /// Working directory inside the container
+    #[arg(short = 'w', long, value_name = "DIR")]
+    pub workdir: Option<String>,
+
+    /// User to run as (name or uid[:gid])
+    #[arg(short = 'u', long, value_name = "USER")]
+    pub user: Option<String>,
+
+    /// Network mode: host (share the host's) or none (loopback only)
+    #[arg(long, value_name = "MODE", default_value = "host")]
+    pub network: yarc_runtime::Network,
+
+    /// Image reference; pulled automatically when missing
+    pub image: String,
+
+    /// Command and arguments, replacing the image's Cmd
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub cmd: Vec<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ContainerCommand {
+    /// List containers
+    Ls,
+    /// Remove containers and their root filesystems
+    Rm(RmArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RmArgs {
+    /// Container ids or names
+    #[arg(required = true)]
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -85,7 +139,44 @@ mod tests {
     }
 
     #[test]
+    fn create_defaults() {
+        let cli = parse(&["create", "alpine"]).unwrap();
+        let Command::Create(a) = cli.command else { panic!() };
+        assert_eq!(a.image, "alpine");
+        assert!(a.cmd.is_empty() && a.env.is_empty());
+        assert_eq!(a.network, yarc_runtime::Network::Host);
+        assert_eq!((a.name, a.entrypoint, a.workdir, a.user), (None, None, None, None));
+    }
+
+    #[test]
+    fn create_options_before_the_image_and_command_after() {
+        let cli = parse(&[
+            "create", "--name", "web", "-e", "A=1", "-e", "B=2", "--entrypoint", "/bin/sh", "-w", "/app",
+            "--network", "none", "alpine", "-c", "echo $A", "--not-an-option",
+        ])
+        .unwrap();
+        let Command::Create(a) = cli.command else { panic!() };
+        assert_eq!(a.name.as_deref(), Some("web"));
+        assert_eq!(a.env, ["A=1", "B=2"]);
+        assert_eq!((a.entrypoint.as_deref(), a.workdir.as_deref()), (Some("/bin/sh"), Some("/app")));
+        assert_eq!(a.network, yarc_runtime::Network::None);
+        assert_eq!(a.image, "alpine");
+        // everything after the image belongs to the container's command
+        assert_eq!(a.cmd, ["-c", "echo $A", "--not-an-option"]);
+    }
+
+    #[test]
+    fn container_subcommands() {
+        assert!(matches!(parse(&["container", "ls"]).unwrap().command, Command::Container(ContainerCommand::Ls)));
+        let Command::Container(ContainerCommand::Rm(a)) = parse(&["container", "rm", "a", "b"]).unwrap().command else { panic!() };
+        assert_eq!(a.ids, ["a", "b"]);
+        assert!(parse(&["container", "rm"]).is_err());
+    }
+
+    #[test]
     fn rejects_bad_input() {
+        assert!(parse(&["create"]).is_err());
+        assert!(parse(&["create", "--network", "bridge", "alpine"]).is_err());
         assert!(parse(&[]).is_err());
         assert!(parse(&["pull"]).is_err());
         assert!(parse(&["pull", "x", "--jobs", "0"]).is_err());

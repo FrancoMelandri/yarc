@@ -3,17 +3,17 @@
 //! The in-house implementation (namespaces, cgroups v2, overlayfs, pivot_root)
 //! lives behind [`Runtime`] so it can later be compared against / swapped for
 //! youki's `libcontainer`.
+//!
+//! This crate also owns the *description* of a container ([`ContainerSpec`],
+//! built by [`resolve_process`]) and its on-disk record ([`ContainerStore`]).
 
-use std::path::PathBuf;
+mod container;
+mod error;
+mod spec;
 
-/// Everything needed to start one container.
-#[derive(Debug, Clone)]
-pub struct ContainerSpec {
-    pub id: String,
-    pub rootfs: PathBuf,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
-}
+pub use container::ContainerStore;
+pub use error::{Result, RuntimeError};
+pub use spec::{resolve_process, ContainerSpec, ImageDefaults, Network, Overrides, Process, DEFAULT_PATH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -25,9 +25,9 @@ pub enum State {
 pub trait Runtime {
     type Error;
 
-    fn create(&mut self, spec: &ContainerSpec) -> Result<(), Self::Error>;
-    fn start(&mut self, id: &str) -> Result<(), Self::Error>;
-    fn state(&self, id: &str) -> Result<State, Self::Error>;
-    fn kill(&mut self, id: &str, signal: i32) -> Result<(), Self::Error>;
-    fn delete(&mut self, id: &str) -> Result<(), Self::Error>;
+    fn create(&mut self, spec: &ContainerSpec) -> std::result::Result<(), Self::Error>;
+    fn start(&mut self, id: &str) -> std::result::Result<(), Self::Error>;
+    fn state(&self, id: &str) -> std::result::Result<State, Self::Error>;
+    fn kill(&mut self, id: &str, signal: i32) -> std::result::Result<(), Self::Error>;
+    fn delete(&mut self, id: &str) -> std::result::Result<(), Self::Error>;
 }

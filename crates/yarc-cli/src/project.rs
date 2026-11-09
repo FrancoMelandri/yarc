@@ -135,8 +135,8 @@ pub fn format_ports(ports: &[PortMapping]) -> String {
 }
 
 /// Bump when the way containers are wired up changes in a way that requires
-/// recreating them (1: host network, 2: shared project network, 3: volumes).
-const WIRING_MODEL: u32 = 3;
+/// recreating them (1: host network, 2: shared project network, 3: volumes, 4: resolv.conf).
+const WIRING_MODEL: u32 = 4;
 
 /// Lexically normalizes a path: drops `.` and resolves `..` (no symlink lookups,
 /// the path may not exist yet).
@@ -681,6 +681,8 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
     }
     let net = ensure_network(root, &store, &loaded)?;
     net.write_hosts(&host_names(&loaded))?;
+    let outbound = net.info()?.is_some_and(|i| i.outbound);
+    net.write_resolv(outbound, &yarc_runtime::host_search_domains())?;
     if let Some(info) = net.info()? {
         if !info.outbound {
             eprintln!(

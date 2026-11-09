@@ -30,7 +30,7 @@ use nix::unistd::{fork, getegid, geteuid, pipe, ForkResult, Pid};
 
 use crate::error::{Result, RuntimeError};
 use crate::linux::loopback_up;
-use crate::network::{NetInfo, PortMap, ProjectNet};
+use crate::network::{NetInfo, PortMap, ProjectNet, DNS_FORWARD_ADDR};
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -201,6 +201,7 @@ pub fn pasta_args(binary: &Path, pid: u32) -> Vec<String> {
     for flag in ["-t", "-u", "-T", "-U"] {
         args.extend([flag.into(), "none".into()]);
     }
+    args.extend(["--dns-forward".into(), DNS_FORWARD_ADDR.into()]);
     args.push(pid.to_string());
     args
 }
@@ -306,6 +307,8 @@ mod pasta_tests {
         assert_eq!(args.first().map(String::as_str), Some("/usr/bin/pasta"));
         assert_eq!(args.last().map(String::as_str), Some("4242"));
         assert!(args.contains(&"--config-net".to_string()) && args.contains(&"--foreground".to_string()));
+        let i = args.iter().position(|a| a == "--dns-forward").unwrap();
+        assert_eq!(args[i + 1], DNS_FORWARD_ADDR);
         for flag in ["-t", "-u", "-T", "-U"] {
             let i = args.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag} missing"));
             assert_eq!(args[i + 1], "none", "{flag} must not forward ports");

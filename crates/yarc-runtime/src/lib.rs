@@ -38,7 +38,7 @@ pub use lifecycle::{exec_container, remove_container, run_recorded, run_recorded
 #[cfg(target_os = "linux")]
 pub use linux::{process_alive, start, Running};
 pub use logs::{format_timestamp, read_log, read_log_from, LogEntry, LogWriter, Stream};
-pub use network::{NetInfo, PortMap, ProjectNet};
+pub use network::{host_search_domains, NetInfo, PortMap, ProjectNet};
 #[cfg(target_os = "linux")]
 pub use netns::{run_holder, stop_holder};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};

@@ -136,6 +136,18 @@ pub fn mount_plan(spec: &ContainerSpec) -> Vec<SetupOp> {
             ),
         }),
     }
+    if let Some(shared) = &spec.hosts_file {
+        // The project's shared resolver config sits next to its hosts file. It is
+        // optional: a project network from before DNS existed does not have one.
+        plan.push(SetupOp::Bind {
+            source: shared.with_file_name("resolv.conf"),
+            target: "etc/resolv.conf".into(),
+            kind: BindKind::File,
+            recursive: false,
+            opts: MountOpts::default(),
+            optional: true,
+        });
+    }
     if spec.network == Network::Host {
         plan.push(SetupOp::CopyHost { source: PathBuf::from("/etc/resolv.conf"), path: "etc/resolv.conf".into() });
     }
@@ -233,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn a_project_container_binds_the_shared_hosts_file_and_skips_resolv_conf() {
+    fn a_project_container_binds_the_shared_hosts_and_resolv_files() {
         let s = spec(Network::Host).in_project_network("/p/net".into(), "/p/net/hosts".into());
         assert_eq!(s.network, Network::Project);
         let plan = mount_plan(&s);
@@ -241,7 +253,10 @@ mod tests {
             SetupOp::Bind { source, target, kind: BindKind::File, optional: false, .. }
                 if source == &PathBuf::from("/p/net/hosts") && target == "etc/hosts")));
         assert!(!plan.iter().any(|op| matches!(op, SetupOp::WriteFile { path, .. } if path == "etc/hosts")));
-        assert!(!plan.iter().any(|op| matches!(op, SetupOp::CopyHost { .. })), "no outbound network, no resolv.conf");
+        assert!(!plan.iter().any(|op| matches!(op, SetupOp::CopyHost { .. })), "the host resolv.conf is not copied into a project");
+        assert!(plan.iter().any(|op| matches!(op,
+            SetupOp::Bind { source, target, optional: true, .. }
+                if source == &PathBuf::from("/p/net/resolv.conf") && target == "etc/resolv.conf")));
         assert!(plan.iter().any(|op| matches!(op, SetupOp::WriteFile { path, .. } if path == "etc/hostname")));
     }
 

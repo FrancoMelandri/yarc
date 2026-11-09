@@ -147,6 +147,19 @@ impl ProjectNet {
         write_atomic(&self.hosts_path(), content.as_bytes())
     }
 
+    pub fn resolv_path(&self) -> PathBuf {
+        self.dir.join("resolv.conf")
+    }
+
+    /// Writes the shared `resolv.conf`: with outbound networking, the address
+    /// pasta forwards to the host's resolver plus the host's search domains;
+    /// without it an empty file, so lookups fail at once instead of hanging on
+    /// a resolver that does not exist.
+    pub fn write_resolv(&self, outbound: bool, search: &[String]) -> Result<()> {
+        self.create_dir()?;
+        write_atomic(&self.resolv_path(), resolv_conf(outbound, search).as_bytes())
+    }
+
     /// Deletes the directory (the holder must be stopped first).
     pub fn remove(&self) -> Result<()> {
         match fs::remove_dir_all(&self.dir) {
@@ -247,5 +260,67 @@ mod compat_tests {
         let info: NetInfo = serde_json::from_str(old).unwrap();
         assert!(!info.outbound);
         assert_eq!(info.outbound_note, None);
+    }
+}
+
+/// Address inside the project's namespace that pasta maps to the host's DNS
+/// resolver (link-local, so it cannot clash with a real network).
+pub const DNS_FORWARD_ADDR: &str = "169.254.0.53";
+
+fn resolv_conf(outbound: bool, search: &[String]) -> String {
+    if !outbound {
+        return String::new();
+    }
+    let mut out = format!("nameserver {DNS_FORWARD_ADDR}\n");
+    if !search.is_empty() {
+        out.push_str(&format!("search {}\n", search.join(" ")));
+    }
+    out
+}
+
+/// Search domains of a `resolv.conf` (the last `search` or `domain` line wins).
+pub fn parse_search_domains(text: &str) -> Vec<String> {
+    let mut domains = Vec::new();
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        if matches!(words.next(), Some("search" | "domain")) {
+            domains = words.take(6).map(str::to_string).collect();
+        }
+    }
+    domains
+}
+
+/// The host's search domains; none if its `resolv.conf` cannot be read.
+pub fn host_search_domains() -> Vec<String> {
+    std::fs::read_to_string("/etc/resolv.conf").map(|t| parse_search_domains(&t)).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod dns_tests {
+    use super::*;
+
+    #[test]
+    fn search_domains_come_from_the_last_search_or_domain_line() {
+        assert_eq!(parse_search_domains("nameserver 1.1.1.1\nsearch a.com b.com\n"), ["a.com", "b.com"]);
+        assert_eq!(parse_search_domains("search a.com\ndomain z.org\n"), ["z.org"]);
+        assert_eq!(parse_search_domains("# search no.com\nnameserver 1.1.1.1\n"), Vec::<String>::new());
+        assert_eq!(parse_search_domains("search a b c d e f g h\n").len(), 6, "resolv.conf allows six");
+    }
+
+    #[test]
+    fn resolv_conf_points_at_the_forwarder_only_with_outbound() {
+        assert_eq!(resolv_conf(false, &["x.com".into()]), "");
+        assert_eq!(resolv_conf(true, &[]), "nameserver 169.254.0.53\n");
+        assert_eq!(resolv_conf(true, &["x.com".into(), "y.com".into()]), "nameserver 169.254.0.53\nsearch x.com y.com\n");
+    }
+
+    #[test]
+    fn write_resolv_replaces_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let net = ProjectNet::new(root.path(), "p").unwrap();
+        net.write_resolv(true, &[]).unwrap();
+        assert!(std::fs::read_to_string(net.resolv_path()).unwrap().starts_with("nameserver"));
+        net.write_resolv(false, &[]).unwrap();
+        assert_eq!(std::fs::read_to_string(net.resolv_path()).unwrap(), "");
     }
 }

@@ -68,7 +68,7 @@ shim model applies. The host CLI invokes the in-VM agent per command.
 - **Networking** (decided at M4): rootless, so one shared user+network namespace per project
   (like a podman pod): services reach each other on `localhost`, service names resolve to
   `127.0.0.1` through `/etc/hosts`, published ports go through a userspace TCP proxy
-  (bound to `127.0.0.1` by default); outbound traffic goes through `pasta` (package `passt`) when installed (P3; IPv4, no DNS yet).
+  (bound to `127.0.0.1` by default); outbound traffic goes through `pasta` (package `passt`) when installed (P3; IPv4) and DNS is forwarded to the host resolver (P5).
   The original idea (per-project bridge, veth pairs, embedded DNS, NAT) needs real root and moves
   to the rootful agent.
 - **Privileges** (decided at M2): rootless first (user namespaces, a single uid mapped to 0);

@@ -14,6 +14,7 @@
 mod argv;
 #[cfg(unix)]
 mod server;
+#[cfg(unix)]
 mod utf8;
 
 pub use argv::{to_args, ArgError};

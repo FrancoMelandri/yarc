@@ -48,6 +48,8 @@ pub enum Command {
     /// Internal: supervises one detached container
     #[command(name = "__shim", hide = true)]
     Shim(ShimArgs),
+    /// Check that containers can run here (Windows: in the WSL distro)
+    Doctor,
     /// Internal: serves the CLI protocol on stdin/stdout for a client on another OS
     #[command(name = "agent", hide = true)]
     Agent(AgentArgs),

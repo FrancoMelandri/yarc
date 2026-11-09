@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+ctrlc = { version = "3", features = ["termination"] }
 clap = { version = "4", features = ["derive", "env"] }
 yarc-agent = { path = "../yarc-agent" }
 yarc-config = { path = "../yarc-config" }

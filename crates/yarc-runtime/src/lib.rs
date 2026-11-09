@@ -13,6 +13,7 @@ mod container;
 mod error;
 #[cfg(target_os = "linux")]
 mod exec;
+#[cfg(target_os = "linux")]
 mod health;
 #[cfg(target_os = "linux")]
 mod lifecycle;
@@ -22,6 +23,7 @@ mod logs;
 mod network;
 #[cfg(target_os = "linux")]
 mod netns;
+#[cfg(target_os = "linux")]
 mod paths;
 mod plan;
 #[cfg(target_os = "linux")]
@@ -29,6 +31,7 @@ mod pump;
 mod spec;
 mod state;
 
+#[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
 
 pub use container::ContainerStore;
@@ -48,6 +51,7 @@ pub use state::{describe, now_ms, ContainerState, Health, HealthStatus, Status};
 /// How to start a container. The descriptors become the container's stdin,
 /// stdout and stderr (`None`: inherit yarc's); [`start`] closes yarc's copies.
 #[derive(Debug, Default)]
+#[cfg(target_os = "linux")]
 pub struct StartOptions {
     /// Report optional setup steps that were skipped.
     pub debug: bool,

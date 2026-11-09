@@ -865,6 +865,10 @@ dependencies = [
 [[package]]
 name = "yarc-proto"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "yarc-runtime"

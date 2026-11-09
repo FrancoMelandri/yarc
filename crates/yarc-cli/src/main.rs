@@ -49,6 +49,7 @@ fn run() -> Result<u8> {
         Command::Ps(args) => commands::container_ls(&root, args.all).map(|()| 0),
         Command::Shim(args) => detached::shim(&root, args).map(|()| 0),
         Command::Holder(args) => detached::holder(&root, args).map(|()| 0),
+        Command::Agent(_) => agent().map(|()| 0),
         Command::Up(args) => project::up(&root, &opts, args.detach),
         Command::Down(args) => project::down(&root, &opts, Duration::from_secs(args.time), args.volumes).map(|()| 0),
         Command::Project(cmd) => match cmd {
@@ -72,4 +73,19 @@ fn container(root: &Path, cmd: ContainerCommand) -> Result<u8> {
         ContainerCommand::Logs(args) => commands::container_logs(root, args).map(|()| 0),
         ContainerCommand::Rm(args) => control::rm(root, args).map(|()| 0),
     }
+}
+
+/// `yarc agent --stdio`: serves protocol requests, running this same binary for each.
+#[cfg(target_os = "linux")]
+fn agent() -> Result<()> {
+    use anyhow::Context;
+
+    let exe = std::env::current_exe().context("cannot locate the yarc executable")?;
+    yarc_agent::serve(std::io::stdin().lock(), std::io::stdout(), &exe)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn agent() -> Result<()> {
+    anyhow::bail!("the agent serves requests on Linux; run yarc inside WSL")
 }

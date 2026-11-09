@@ -1,6 +1,6 @@
 # M5 — Plan: the agent and Windows via WSL2
 
-Status: **decisions taken** (transport: on-demand agent over stdio; existing distro first; image cache first). M5d and M5a1 done; next is M5a2.
+Status: **decisions taken** (transport: on-demand agent over stdio; existing distro first; image cache first). M5d, M5a1 and M5a3 done; next is M5a4.
 
 ## Starting point
 The `yarc` binary does everything on Linux: the CLI calls `yarc-runtime` directly and detached containers are held by shims. `yarc-agent` and `yarc-proto` are empty crates. On Windows only `pull`, `load`, `image` and `project config` work.
@@ -19,8 +19,8 @@ Goal: `yarc.exe` on Windows drives a Linux `yarc` inside WSL2 as if it were loca
 ## Steps (each ends with a progress doc, then stop)
 - **M5d** shared image cache for the live tests. ✔
 - **M5a1** ✔ `yarc-proto`: frames and messages, handshake, round-trip and golden wire-format tests.
-- **M5a2** output sink: move `println!`/`eprintln!` in `yarc-cli` behind a small trait; behaviour unchanged, existing tests are the proof.
-- **M5a3** `yarc-agent` + hidden `yarc agent --stdio`: reads requests, runs the command functions, emits events; tested in-process, no WSL.
+- **M5a2** dropped: an output sink cannot capture what the runtime itself prints, so the agent runs each request as a child `yarc` process instead (see M5a3).
+- **M5a3** ✔ `yarc-agent` + hidden `yarc agent --stdio`: typed request -> argv, child process per request, pipes relayed as events, `cancel` = SIGINT; tested with a fake yarc, the real binary and live containers.
 - **M5a4** Windows client: spawn the agent through `wsl.exe`, translate paths, relay events and exit code, `yarc doctor` (WSL, distro, binary, pasta, user namespaces); live test `yarc.exe up -d / ps / down`.
 - **M5b** ports and signals: localhost forwarding, Ctrl-C as `Cancel`, `logs -f`; `exec` stays without a pty.
 - **M5c** `yarc setup`: dedicated distro and musl binary (confirm with the user first).

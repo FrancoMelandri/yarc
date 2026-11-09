@@ -103,7 +103,7 @@ Principles: short keys, one way to write each thing, `needs` replaces `depends_o
 Images: `pull`, `load`, `image ls|rm|unpack`.
 Containers: `run`, `create`, `start`, `stop`, `kill`, `wait`, `ps`, `logs`, `rm`, `pull`.
 Projects: `up`, `down`, `project ps|logs|stop|config`; global `--file` / `--project`.
-Still to come: `exec`, `restart`.
+Still to come: `restart`. Hidden: `agent --stdio` (serves the `yarc-proto` protocol).
 
 ## Milestones
 1. **M0** workspace + `yarc.yaml` parser. ✔
@@ -113,7 +113,7 @@ Still to come: `exec`, `restart`.
 5. **M4** projects: `up/down/project ps|logs|stop|config` (a ✔), exec + healthchecks (b ✔),
    project network, names and published ports (c ✔), volumes (d ✔).
 6. **M5** the agent and Windows via WSL2 (see `docs/progress/M5-plan.md`): shared image cache for live tests (d ✔),
-   `yarc-proto` (a1 ✔), output sink (a2), stdio agent (a3), Windows client (a4), ports and signals (b), setup (c).
+   `yarc-proto` (a1 ✔), stdio agent running the CLI as child processes (a3 ✔; a2, an output sink, was dropped), Windows client (a4), ports and signals (b), setup (c).
 7. **M6** macOS via Virtualization.framework.
 
 ## Dev environment

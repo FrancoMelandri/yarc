@@ -48,6 +48,9 @@ pub enum Command {
     /// Internal: supervises one detached container
     #[command(name = "__shim", hide = true)]
     Shim(ShimArgs),
+    /// Internal: serves the CLI protocol on stdin/stdout for a client on another OS
+    #[command(name = "agent", hide = true)]
+    Agent(AgentArgs),
     /// Internal: owns a project's network namespace and publishes its ports
     #[command(name = "__holder", hide = true)]
     Holder(HolderArgs),
@@ -118,6 +121,13 @@ pub struct PsArgs {
     /// Show all containers, not just running ones
     #[arg(short = 'a', long)]
     pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentArgs {
+    /// Speak the protocol on stdin and stdout (the only transport so far)
+    #[arg(long, required = true)]
+    pub stdio: bool,
 }
 
 #[derive(Debug, Args)]

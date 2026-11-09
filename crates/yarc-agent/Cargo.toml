@@ -3,9 +3,13 @@ name = "yarc-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "yarc agent: runs inside Linux (native or VM)"
+description = "yarc agent: serves protocol requests inside Linux by running the yarc CLI"
 
 [dependencies]
-yarc-oci = { path = "../yarc-oci" }
-yarc-runtime = { path = "../yarc-runtime" }
 yarc-proto = { path = "../yarc-proto" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

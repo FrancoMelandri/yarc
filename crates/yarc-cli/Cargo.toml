@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+yarc-agent = { path = "../yarc-agent" }
 yarc-config = { path = "../yarc-config" }
 yarc-oci = { path = "../yarc-oci" }
 yarc-proto = { path = "../yarc-proto" }

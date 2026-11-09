@@ -818,9 +818,9 @@ dependencies = [
 name = "yarc-agent"
 version = "0.0.1"
 dependencies = [
- "yarc-oci",
+ "libc",
+ "tempfile",
  "yarc-proto",
- "yarc-runtime",
 ]
 
 [[package]]
@@ -832,6 +832,7 @@ dependencies = [
  "libc",
  "serde_json",
  "tempfile",
+ "yarc-agent",
  "yarc-config",
  "yarc-oci",
  "yarc-proto",

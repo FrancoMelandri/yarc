@@ -113,7 +113,7 @@ Also `doctor`. Still to come: `restart`. Hidden: `agent --stdio` (serves the `ya
 5. **M4** projects: `up/down/project ps|logs|stop|config` (a ✔), exec + healthchecks (b ✔),
    project network, names and published ports (c ✔), volumes (d ✔).
 6. **M5** the agent and Windows via WSL2 (see `docs/progress/M5-plan.md`): shared image cache for live tests (d ✔),
-   `yarc-proto` (a1 ✔), stdio agent running the CLI as child processes (a3 ✔; a2, an output sink, was dropped), Windows client (a4 ✔, see M5a4 for what is still unverified on real Windows), ports and signals (b), setup (c).
+   `yarc-proto` (a1 ✔), stdio agent running the CLI as child processes (a3 ✔; a2, an output sink, was dropped), Windows client (a4 ✔, see M5a4 for what is still unverified on real Windows), ports and signals (b ✔, Ctrl-C and ports checked on Windows by the user), setup (c, postponed: see `docs/progress/M5c-setup-plan.md`).
 7. **M6** macOS via Virtualization.framework.
 
 ## Dev environment

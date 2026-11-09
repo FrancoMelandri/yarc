@@ -1,6 +1,6 @@
 # M5 — Plan: the agent and Windows via WSL2
 
-Status: **decisions taken** (transport: on-demand agent over stdio; existing distro first; image cache first). M5d, M5a1, M5a3 and M5a4 done; next is M5b (and a real Windows run).
+Status: **decisions taken** (transport: on-demand agent over stdio; existing distro first; image cache first). M5d, M5a1, M5a3 and M5a4 done; M5b verified by the user on Windows; M5c (setup) is a postponed future improvement.
 
 ## Starting point
 The `yarc` binary does everything on Linux: the CLI calls `yarc-runtime` directly and detached containers are held by shims. `yarc-agent` and `yarc-proto` are empty crates. On Windows only `pull`, `load`, `image` and `project config` work.
@@ -23,7 +23,7 @@ Goal: `yarc.exe` on Windows drives a Linux `yarc` inside WSL2 as if it were loca
 - **M5a3** ✔ `yarc-agent` + hidden `yarc agent --stdio`: typed request -> argv, child process per request, pipes relayed as events, `cancel` = SIGINT; tested with a fake yarc, the real binary and live containers.
 - **M5a4** ✔ (tested via a fake wsl.exe; not yet run on real Windows) Windows client: `remote/` module, `yarc doctor`, `YARC_WSL_*` settings, `YARC_REMOTE=1` to force it on Linux.
 - **M5b** ports and signals: Ctrl-C as `Cancel` done (see M5a4); still to do: localhost forwarding of published ports, `logs -f` check on real Windows; `exec` stays without a pty.
-- **M5c** `yarc setup`: dedicated distro and musl binary (confirm with the user first).
+- **M5c** `yarc setup`: dedicated distro and musl binary. **Postponed as a future improvement** (the user sets WSL up by hand for now); full plan in `docs/progress/M5c-setup-plan.md`.
 
 ## Risks
 `wsl.exe` argument quoting and UTF-16 output of `wsl -l`; slow `/mnt/c` mounts; a distro without `passt` (outbound degrades with a warning, as now); the output-sink refactor (M5a2) touches most commands.

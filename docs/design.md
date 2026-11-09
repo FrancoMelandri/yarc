@@ -98,6 +98,7 @@ Principles: short keys, one way to write each thing, `needs` replaces `depends_o
 `cmd` (a list of arguments, added in M4a) replaces the image's default command.
 
 ## CLI (v1)
+Images: `pull`, `load`, `image ls|rm|unpack`.
 Containers: `run`, `create`, `start`, `stop`, `kill`, `wait`, `ps`, `logs`, `rm`, `pull`.
 Projects: `up`, `down`, `project ps|logs|stop|config`; global `--file` / `--project`.
 Still to come: `exec`, `restart`.

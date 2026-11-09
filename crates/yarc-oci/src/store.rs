@@ -30,6 +30,14 @@ pub struct StoredImage {
     pub config: ImageConfig,
 }
 
+/// What [`BlobStore::remove_image`] deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveReport {
+    pub digest: Digest,
+    pub blobs_removed: usize,
+    pub bytes_freed: u64,
+}
+
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const BUF_SIZE: usize = 64 * 1024;
 
@@ -212,6 +220,77 @@ impl BlobStore {
         let config = parse_config(&self.read_blob(&Digest::parse(&manifest.config.digest)?)?)?;
         Ok(StoredImage { reference: reference.clone(), manifest_digest, manifest, config })
     }
+
+    /// Every reference in the store with the manifest it points to, sorted by name.
+    pub fn list_refs(&self) -> Result<Vec<(Reference, Digest)>> {
+        let dir = self.refs_dir();
+        let mut out: Vec<(Reference, Digest)> = Vec::new();
+        for entry in fs::read_dir(&dir).map_err(io_err(&dir))? {
+            let path = entry.map_err(io_err(&dir))?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let json_err = |msg: String| OciError::Json { what: format!("ref file {}", path.display()), msg };
+            let text = fs::read_to_string(&path).map_err(io_err(&path))?;
+            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| json_err(e.to_string()))?;
+            let field = |k: &str| v.get(k).and_then(|x| x.as_str()).ok_or_else(|| json_err(format!("missing '{k}'")));
+            let reference: Reference = field("reference")?.parse()?;
+            out.push((reference, Digest::parse(field("digest")?)?));
+        }
+        out.sort_by_key(|(r, _)| r.to_string());
+        Ok(out)
+    }
+
+    /// The manifest, config and layer blobs of the image whose manifest is `manifest_digest`.
+    pub fn image_blobs(&self, manifest_digest: &Digest) -> Result<Vec<Digest>> {
+        let manifest = match parse_manifest(&self.read_blob(manifest_digest)?)? {
+            Manifest::Image(m) => m,
+            Manifest::Index(_) => {
+                return Err(OciError::Unsupported("stored manifest is an image index".into()))
+            }
+        };
+        let mut blobs = vec![manifest_digest.clone(), Digest::parse(&manifest.config.digest)?];
+        for layer in &manifest.layers {
+            blobs.push(Digest::parse(&layer.digest)?);
+        }
+        Ok(blobs)
+    }
+
+    /// Forget `reference` and delete the blobs no other image uses.
+    ///
+    /// Containers already created from the image are unaffected (their root
+    /// filesystem was unpacked). Returns `None` if the reference is unknown.
+    pub fn remove_image(&self, reference: &Reference) -> Result<Option<RemoveReport>> {
+        let Some(digest) = self.get_ref(reference)? else { return Ok(None) };
+        let doomed = self.image_blobs(&digest)?;
+
+        // Work out what the other images still need *before* deleting anything,
+        // so an unreadable image aborts the removal instead of losing its blobs.
+        let mut keep = std::collections::HashSet::new();
+        for (other, other_digest) in self.list_refs()? {
+            if &other != reference {
+                keep.extend(self.image_blobs(&other_digest)?);
+            }
+        }
+
+        let path = self.ref_path(reference);
+        fs::remove_file(&path).map_err(io_err(&path))?;
+
+        let mut report = RemoveReport { digest, blobs_removed: 0, bytes_freed: 0 };
+        for blob in doomed.iter().filter(|b| !keep.contains(*b)) {
+            let p = self.blob_path(blob);
+            let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            match fs::remove_file(&p) {
+                Ok(()) => {
+                    report.blobs_removed += 1;
+                    report.bytes_freed += size;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_err(&p)(e)),
+            }
+        }
+        Ok(Some(report))
+    }
 }
 
 #[cfg(test)]
@@ -317,5 +396,74 @@ mod tests {
         let other: Reference = "alpine:3.19".parse().unwrap();
         assert_eq!(s.get_ref(&other).unwrap(), None);
         assert!(tmp_is_empty(&s));
+    }
+
+    /// Store an image made of `layers` under `name`; returns its manifest digest.
+    fn put_image(s: &BlobStore, name: &str, layers: &[&[u8]]) -> Digest {
+        let config = format!(r#"{{"architecture":"amd64","os":"linux","created":"2026-01-02T03:04:05Z","config":{{}},"tag":"{name}"}}"#);
+        let cd = Digest::of(config.as_bytes());
+        s.put_bytes(&cd, config.as_bytes()).unwrap();
+        let mut descs = Vec::new();
+        for l in layers {
+            let d = Digest::of(l);
+            s.put_bytes(&d, l).unwrap();
+            descs.push(format!(r#"{{"mediaType":"l","digest":"{d}","size":{}}}"#, l.len()));
+        }
+        let manifest = format!(
+            r#"{{"schemaVersion":2,"config":{{"mediaType":"c","digest":"{cd}","size":{}}},"layers":[{}]}}"#,
+            config.len(),
+            descs.join(",")
+        );
+        let md = Digest::of(manifest.as_bytes());
+        s.put_bytes(&md, manifest.as_bytes()).unwrap();
+        s.set_ref(&name.parse().unwrap(), &md).unwrap();
+        md
+    }
+
+    #[test]
+    fn lists_refs_sorted_and_reads_created() {
+        let (_d, s) = store();
+        assert!(s.list_refs().unwrap().is_empty());
+        put_image(&s, "zeta:1", &[b"z"]);
+        let md = put_image(&s, "alpha:2", &[b"a"]);
+        let refs = s.list_refs().unwrap();
+        let names: Vec<_> = refs.iter().map(|(r, _)| r.to_string()).collect();
+        assert_eq!(names, ["registry-1.docker.io/library/alpha:2", "registry-1.docker.io/library/zeta:1"]);
+        assert_eq!(refs[0].1, md);
+        let img = s.load_image(&"alpha:2".parse().unwrap()).unwrap();
+        assert_eq!(img.config.created.as_deref(), Some("2026-01-02T03:04:05Z"));
+    }
+
+    #[test]
+    fn remove_deletes_only_blobs_no_other_image_uses() {
+        let (_d, s) = store();
+        let shared: &[u8] = b"shared-layer";
+        put_image(&s, "a:1", &[shared, b"only-a"]);
+        put_image(&s, "b:1", &[shared, b"only-b"]);
+
+        let report = s.remove_image(&"a:1".parse().unwrap()).unwrap().unwrap();
+        // manifest + config + the one private layer
+        assert_eq!(report.blobs_removed, 3);
+        assert!(report.bytes_freed >= b"only-a".len() as u64);
+        assert!(s.get_ref(&"a:1".parse().unwrap()).unwrap().is_none());
+        assert!(!s.contains(&Digest::of(b"only-a")));
+        assert!(s.contains(&Digest::of(shared)));
+        // b is still complete
+        assert!(s.load_image(&"b:1".parse().unwrap()).is_ok());
+        assert!(s.contains(&Digest::of(b"only-b")));
+
+        assert_eq!(s.remove_image(&"a:1".parse().unwrap()).unwrap(), None);
+        s.remove_image(&"b:1".parse().unwrap()).unwrap().unwrap();
+        assert!(!s.contains(&Digest::of(shared)));
+    }
+
+    #[test]
+    fn two_names_for_one_image_keep_its_blobs() {
+        let (_d, s) = store();
+        let md = put_image(&s, "a:1", &[b"layer"]);
+        s.set_ref(&"a:latest".parse().unwrap(), &md).unwrap();
+        let report = s.remove_image(&"a:1".parse().unwrap()).unwrap().unwrap();
+        assert_eq!(report.blobs_removed, 0);
+        assert!(s.load_image(&"a:latest".parse().unwrap()).is_ok());
     }
 }

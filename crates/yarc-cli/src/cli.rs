@@ -27,6 +27,8 @@ pub struct Cli {
 pub enum Command {
     /// Download an image from a registry into the local store
     Pull(PullArgs),
+    /// Import images from an OCI layout archive (or directory) into the local store
+    Load(LoadArgs),
     /// Work with images in the local store
     #[command(subcommand)]
     Image(ImageCommand),
@@ -299,6 +301,12 @@ pub struct RmArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct LoadArgs {
+    /// Tar archive of an OCI image layout (e.g. images.tar), or the layout directory
+    pub file: PathBuf,
+}
+
+#[derive(Debug, Args)]
 pub struct PullArgs {
     /// Image reference, e.g. alpine, postgres:16, ghcr.io/org/app:1.2
     pub image: String,
@@ -314,8 +322,20 @@ pub struct PullArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ImageCommand {
+    /// List the images in the local store
+    #[command(visible_alias = "list")]
+    Ls,
+    /// Remove images from the local store, freeing layers no other image uses
+    Rm(ImageRmArgs),
     /// Extract a pulled image into a directory (Linux only)
     Unpack(UnpackArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ImageRmArgs {
+    /// Image references, as given to `pull` or shown by `image ls`
+    #[arg(required = true)]
+    pub images: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -349,6 +369,23 @@ mod tests {
         assert_eq!(cli.root, Some(PathBuf::from("/tmp/y")));
         let Command::Pull(a) = cli.command else { panic!() };
         assert_eq!((a.jobs, a.platform.as_deref()), (8, Some("linux/arm64")));
+    }
+
+    #[test]
+    fn load_takes_a_path() {
+        let cli = parse(&["load", "images.tar"]).unwrap();
+        let Command::Load(a) = cli.command else { panic!() };
+        assert_eq!(a.file, PathBuf::from("images.tar"));
+        assert!(parse(&["load"]).is_err());
+    }
+
+    #[test]
+    fn image_ls_and_rm() {
+        assert!(matches!(parse(&["image", "ls"]).unwrap().command, Command::Image(ImageCommand::Ls)));
+        assert!(matches!(parse(&["image", "list"]).unwrap().command, Command::Image(ImageCommand::Ls)));
+        let Command::Image(ImageCommand::Rm(a)) = parse(&["image", "rm", "a:1", "b"]).unwrap().command else { panic!() };
+        assert_eq!(a.images, ["a:1", "b"]);
+        assert!(parse(&["image", "rm"]).is_err());
     }
 
     #[test]

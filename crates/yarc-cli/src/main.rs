@@ -41,6 +41,9 @@ fn run() -> Result<u8> {
     match cli.command {
         Command::Run(args) => commands::run(&root, args),
         Command::Pull(args) => commands::pull(&root, args).map(|()| 0),
+        Command::Load(args) => commands::load(&root, args).map(|()| 0),
+        Command::Image(ImageCommand::Ls) => commands::image_ls(&root).map(|()| 0),
+        Command::Image(ImageCommand::Rm(args)) => commands::image_rm(&root, args).map(|()| 0),
         Command::Image(ImageCommand::Unpack(args)) => commands::unpack(&root, args).map(|()| 0),
         Command::Create(args) => commands::create(&root, args).map(|()| 0),
         Command::Ps(args) => commands::container_ls(&root, args.all).map(|()| 0),

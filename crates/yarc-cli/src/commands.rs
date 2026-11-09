@@ -46,6 +46,98 @@ pub fn pull(root: &Path, args: PullArgs) -> Result<()> {
     Ok(())
 }
 
+/// Name as users type it: without the Docker Hub host and `library/` prefix.
+fn short_name(reference: &Reference) -> String {
+    let full = reference.to_string();
+    let name = full.strip_prefix("registry-1.docker.io/").unwrap_or(&full);
+    name.strip_prefix("library/").unwrap_or(name).to_string()
+}
+
+/// `2026-11-03T13:47:20.28Z` -> `2026-11-03 13:47:20`; anything odd is shown as is.
+fn short_time(created: Option<&str>) -> String {
+    match created {
+        Some(t) if t.len() >= 19 && t.as_bytes()[10] == b'T' => format!("{} {}", &t[..10], &t[11..19]),
+        Some(t) => t.to_string(),
+        None => "-".into(),
+    }
+}
+
+/// `yarc image ls`
+pub fn image_ls(root: &Path) -> Result<()> {
+    let store = open_store(root)?;
+    println!("{:<44} {:<14} {:>10}  {}", "IMAGE", "IMAGE ID", "SIZE", "CREATED");
+    for (reference, digest) in store.list_refs()? {
+        let id = &digest.hex()[..12];
+        match store.load_image(&reference) {
+            Ok(img) => {
+                let size: u64 = img.manifest.layers.iter().map(|l| l.size).sum();
+                println!(
+                    "{:<44} {:<14} {:>10}  {}",
+                    short_name(&reference),
+                    id,
+                    human_bytes(size),
+                    short_time(img.config.created.as_deref())
+                );
+            }
+            Err(e) => println!("{:<44} {:<14} {:>10}  (unreadable: {e})", short_name(&reference), id, "-"),
+        }
+    }
+    Ok(())
+}
+
+/// `yarc image rm`: removes every image it can; fails if any was unknown or could not be removed.
+pub fn image_rm(root: &Path, args: crate::cli::ImageRmArgs) -> Result<()> {
+    let store = open_store(root)?;
+    let mut failed = 0;
+    for name in &args.images {
+        let result = name.parse::<Reference>().map_err(anyhow::Error::from).and_then(|reference| {
+            match store.remove_image(&reference)? {
+                Some(r) => {
+                    println!(
+                        "Removed {} ({}; freed {} in {} blob(s))",
+                        short_name(&reference),
+                        &r.digest.hex()[..12],
+                        human_bytes(r.bytes_freed),
+                        r.blobs_removed
+                    );
+                    Ok(())
+                }
+                None => Err(anyhow!("image {name} is not in the local store")),
+            }
+        });
+        if let Err(e) = result {
+            eprintln!("error: {e:#}");
+            failed += 1;
+        }
+    }
+    if failed > 0 {
+        anyhow::bail!("{failed} image(s) could not be removed");
+    }
+    Ok(())
+}
+
+/// `yarc load`: import an OCI layout into the store; works offline and on any OS.
+pub fn load(root: &Path, args: crate::cli::LoadArgs) -> Result<()> {
+    let store = open_store(root)?;
+    let report = yarc_oci::load_path(&store, &args.file)
+        .with_context(|| format!("cannot load {}", args.file.display()))?;
+    for image in &report.images {
+        println!("Loaded {}", image.reference);
+        println!("  digest: {}", image.manifest_digest);
+    }
+    for digest in &report.unnamed {
+        eprintln!("warning: skipped {digest}: it has no image name (annotation io.containerd.image.name)");
+    }
+    println!(
+        "{} image(s); {} blob(s) added ({}), {} already present",
+        report.images.len(),
+        report.blobs_added,
+        human_bytes(report.bytes_added),
+        report.blobs_present
+    );
+    Ok(())
+}
+
 /// `yarc create`: prints the id of the new container.
 pub fn create(root: &Path, args: crate::cli::CreateArgs) -> Result<()> {
     println!("{}", create_container(root, args)?);
@@ -315,5 +407,25 @@ mod tests {
         assert_eq!(human_bytes(1024), "1.0 KiB");
         assert_eq!(human_bytes(3_630_321), "3.5 MiB");
         assert_eq!(human_bytes(5 * 1024 * 1024 * 1024), "5.0 GiB");
+    }
+}
+
+#[cfg(test)]
+mod image_list_tests {
+    use super::*;
+
+    #[test]
+    fn names_are_shortened_like_users_type_them() {
+        let s = |x: &str| short_name(&x.parse().unwrap());
+        assert_eq!(s("alpine:3.20"), "alpine:3.20");
+        assert_eq!(s("dotnet/aspire-dashboard:9.5"), "dotnet/aspire-dashboard:9.5");
+        assert_eq!(s("ghcr.io/org/app:1"), "ghcr.io/org/app:1");
+    }
+
+    #[test]
+    fn times_are_shortened() {
+        assert_eq!(short_time(Some("2026-11-03T13:47:20.282607838Z")), "2026-11-03 13:47:20");
+        assert_eq!(short_time(Some("weird")), "weird");
+        assert_eq!(short_time(None), "-");
     }
 }

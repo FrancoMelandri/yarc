@@ -102,6 +102,8 @@ pub fn select_platform<'a>(index: &'a ImageIndex, want: &Platform) -> Result<&'a
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(default)]
 pub struct ImageConfig {
+    /// RFC 3339 build time, as written by the image's builder.
+    pub created: Option<String>,
     pub architecture: String,
     pub os: String,
     pub config: ContainerConfig,

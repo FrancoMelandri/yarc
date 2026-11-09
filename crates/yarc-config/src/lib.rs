@@ -13,6 +13,8 @@ pub enum ConfigError {
     Yaml(String),
     #[error("service '{0}': image must not be empty")]
     EmptyImage(String),
+    #[error("service '{0}': user must not be empty")]
+    EmptyUser(String),
     #[error("service '{service}': invalid port '{value}': {reason}")]
     InvalidPort { service: String, value: String, reason: String },
     #[error("service '{service}': invalid volume '{value}': {reason}")]

@@ -144,3 +144,18 @@ fn cmd_must_be_a_list_not_a_string() {
     let err = parse("services:\n  a:\n    image: x\n    cmd: 'echo hi'\n").unwrap_err();
     assert!(matches!(err, ConfigError::Yaml(_)), "{err}");
 }
+
+#[test]
+fn user_is_optional_and_accepts_names_ids_and_numbers() {
+    let p = parse("services:\n  a:\n    image: x\n    user: root\n  b:\n    image: y\n    user: '1000:1000'\n  c:\n    image: z\n    user: 0\n  d:\n    image: w\n").unwrap();
+    assert_eq!(p.services["a"].user.as_deref(), Some("root"));
+    assert_eq!(p.services["b"].user.as_deref(), Some("1000:1000"));
+    assert_eq!(p.services["c"].user.as_deref(), Some("0"));
+    assert_eq!(p.services["d"].user, None);
+}
+
+#[test]
+fn empty_user_is_rejected() {
+    let err = parse("services:\n  a:\n    image: x\n    user: ''\n").unwrap_err();
+    assert!(matches!(err, ConfigError::EmptyUser(ref s) if s == "a"), "{err}");
+}

@@ -94,6 +94,8 @@ services:
     needs: { db: healthy }
 ```
 
+`user` (added for the PMS bundle) replaces the image's `USER`; only `root` works until multi-uid support exists.
+
 Principles: short keys, one way to write each thing, `needs` replaces `depends_on` conditions.
 `cmd` (a list of arguments, added in M4a) replaces the image's default command.
 

@@ -240,10 +240,14 @@ pub fn named_volume_dirs(root: &Path, loaded: &Loaded) -> Vec<PathBuf> {
 /// Hash of everything that, when changed, requires a new container. `needs` is
 /// left out on purpose: it only affects start order.
 pub fn service_hash(service: &Service) -> String {
-    let canonical = format!(
+    let mut canonical = format!(
         "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|wiring{WIRING_MODEL}",
         service.image, service.cmd, service.env, service.ports, service.volumes, service.health
     );
+    // Only when set, so containers made before `user` existed keep their hash.
+    if let Some(user) = &service.user {
+        canonical.push_str(&format!("|user:{user}"));
+    }
     Digest::of(canonical.as_bytes()).hex().to_string()
 }
 
@@ -339,6 +343,9 @@ pub fn config(opts: &Opts) -> Result<()> {
             format!("  needs: {}", list.join(", "))
         };
         println!("  {name:<width$}  {}  image {}{needs}", container_name(&loaded.name, name), svc.image);
+        if let Some(user) = &svc.user {
+            println!("  {:<width$}  user {user}", "");
+        }
         if !svc.ports.is_empty() {
             println!("  {:<width$}  ports {}", "", format_ports(&svc.ports));
         }
@@ -526,6 +533,7 @@ fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Lo
                 name: Some(cname.clone()),
                 overrides: yarc_runtime::Overrides {
                     cmd: def.cmd.clone(),
+                    user: def.user.clone(),
                     env: def.env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
                     ..Default::default()
                 },
@@ -941,6 +949,7 @@ mod tests {
         assert_ne!(h, changed("services:\n  app: { image: y, env: { A: '1' }, ports: ['80:80'] }\n"), "image");
         assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '2' }, ports: ['80:80'] }\n"), "env");
         assert_ne!(h, changed("services:\n  app: { image: x, cmd: [true], env: { A: '1' }, ports: ['80:80'] }\n"), "cmd");
+        assert_ne!(h, changed("services:\n  app: { image: x, user: root, env: { A: '1' }, ports: ['80:80'] }\n"), "user");
         assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['81:80'] }\n"), "ports");
         assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['80:80'], volumes: ['v:/d'] }\n"), "volumes");
         assert_ne!(

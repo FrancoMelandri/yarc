@@ -15,6 +15,8 @@ pub struct Service {
     pub image: String,
     /// Replaces the image's default command (like Docker's `CMD`); empty keeps it.
     pub cmd: Vec<String>,
+    /// Replaces the image's `USER` (name or `uid[:gid]`); `None` keeps it.
+    pub user: Option<String>,
     pub env: BTreeMap<String, String>,
     pub ports: Vec<PortMapping>,
     pub volumes: Vec<VolumeMount>,
@@ -80,6 +82,7 @@ struct RawService {
     image: String,
     #[serde(default)]
     cmd: Vec<String>,
+    user: Option<RawUser>,
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
@@ -89,6 +92,14 @@ struct RawService {
     health: Option<RawHealth>,
     #[serde(default)]
     needs: BTreeMap<String, Condition>,
+}
+
+/// `user: root`, `user: "1000:1000"` or a bare `user: 0`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawUser {
+    Name(String),
+    Id(u32),
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +124,13 @@ impl RawService {
     fn into_service(self, name: &str) -> Result<Service, ConfigError> {
         if self.image.trim().is_empty() {
             return Err(ConfigError::EmptyImage(name.into()));
+        }
+        let user = self.user.map(|u| match u {
+            RawUser::Name(s) => s.trim().to_string(),
+            RawUser::Id(n) => n.to_string(),
+        });
+        if user.as_deref() == Some("") {
+            return Err(ConfigError::EmptyUser(name.into()));
         }
         let ports = self
             .ports
@@ -140,6 +158,7 @@ impl RawService {
         Ok(Service {
             image: self.image,
             cmd: self.cmd,
+            user,
             env: self.env,
             ports,
             volumes,

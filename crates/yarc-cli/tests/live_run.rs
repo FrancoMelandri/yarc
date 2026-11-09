@@ -3,6 +3,8 @@
 
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 
@@ -19,7 +21,7 @@ fn yarc(root: &std::path::Path, args: &[&str]) -> Output {
 
 /// create + start; returns (exit code, stdout, stderr of the start step).
 fn run_container(create_args: &[&str]) -> (i32, String, String) {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let mut args = vec!["create"];
     args.extend_from_slice(create_args);
     let created = yarc(root.path(), &args);
@@ -108,7 +110,7 @@ fn a_file_that_is_not_executable_gives_126() {
 #[test]
 #[ignore]
 fn run_executes_and_with_rm_leaves_nothing_behind() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let out = yarc(root.path(), &["run", "--rm", IMAGE, "sh", "-c", "echo hello; exit 3"]);
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
@@ -119,7 +121,7 @@ fn run_executes_and_with_rm_leaves_nothing_behind() {
 #[test]
 #[ignore]
 fn run_without_rm_keeps_the_container_and_with_rm_cleans_up_failed_starts() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let out = yarc(root.path(), &["run", "--name", "kept", IMAGE, "true"]);
     assert_eq!(out.status.code(), Some(0));
     let ls = String::from_utf8_lossy(&yarc(root.path(), &["container", "ls"]).stdout).into_owned();
@@ -142,7 +144,7 @@ fn a_non_root_user_is_refused_for_now() {
 #[test]
 #[ignore]
 fn two_interrupts_stop_a_container_that_ignores_signals() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let created = yarc(root.path(), &["create", IMAGE, "sleep", "100"]);
     let id = String::from_utf8_lossy(&created.stdout).trim().to_string();
     let mut child: Child = Command::new(env!("CARGO_BIN_EXE_yarc"))
@@ -169,7 +171,7 @@ fn text(bytes: &[u8]) -> String {
 #[test]
 #[ignore]
 fn output_is_recorded_per_stream_and_status_is_listed() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     let out = yarc(r, &["run", "--name", "l", IMAGE, "sh", "-c", "echo out; echo err >&2; printf partial; exit 4"]);
     assert_eq!(out.status.code(), Some(4));
@@ -201,7 +203,7 @@ fn output_is_recorded_per_stream_and_status_is_listed() {
 #[test]
 #[ignore]
 fn a_failed_start_is_recorded_as_exited() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let out = yarc(root.path(), &["run", "--name", "f", IMAGE, "no-such-program"]);
     assert_eq!(out.status.code(), Some(127));
     let ls = text(&yarc(root.path(), &["container", "ls"]).stdout);
@@ -211,7 +213,7 @@ fn a_failed_start_is_recorded_as_exited() {
 #[test]
 #[ignore]
 fn dead_and_already_running_containers_are_detected() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     yarc(r, &["create", "--name", "d", IMAGE, "true"]);
     let state_path = r.join("containers/d/state.json");
@@ -265,7 +267,7 @@ fn supervisor_pid(root: &std::path::Path, id: &str) -> String {
 #[test]
 #[ignore]
 fn a_detached_container_outlives_the_command_that_started_it() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     let started = std::time::Instant::now();
     let out = yarc(r, &["run", "-d", "--name", "bg", IMAGE, "sh", "-c", "echo up; sleep 100"]);
@@ -291,7 +293,7 @@ fn a_detached_container_outlives_the_command_that_started_it() {
 #[test]
 #[ignore]
 fn a_detached_container_that_finishes_is_recorded_and_can_be_started_again() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     yarc(r, &["create", "--name", "once", IMAGE, "sh", "-c", "echo hi; exit 2"]);
     let out = yarc(r, &["container", "start", "-d", "once"]);
@@ -305,7 +307,7 @@ fn a_detached_container_that_finishes_is_recorded_and_can_be_started_again() {
 #[test]
 #[ignore]
 fn a_detached_start_failure_is_reported_to_the_caller() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let out = yarc(root.path(), &["run", "-d", "--name", "bad", IMAGE, "no-such-program"]);
     assert_eq!(out.status.code(), Some(127));
     assert!(text(&out.stderr).contains("executable file not found"), "{}", text(&out.stderr));
@@ -315,7 +317,7 @@ fn a_detached_start_failure_is_reported_to_the_caller() {
 #[test]
 #[ignore]
 fn detached_rm_removes_the_container_when_it_exits_or_fails_to_start() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     let out = yarc(r, &["run", "-d", "--rm", "--name", "tmp", IMAGE, "sh", "-c", "sleep 1; echo bye"]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
@@ -330,7 +332,7 @@ fn detached_rm_removes_the_container_when_it_exits_or_fails_to_start() {
 #[test]
 #[ignore]
 fn starting_a_running_detached_container_again_is_refused() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     assert_eq!(yarc(r, &["run", "-d", "--name", "s", IMAGE, "sleep", "100"]).status.code(), Some(0));
     let again = yarc(r, &["container", "start", "-d", "s"]);
@@ -362,7 +364,7 @@ fn run_bg(r: &std::path::Path, name: &str, script: &str) {
 #[test]
 #[ignore]
 fn stop_lets_a_container_that_handles_sigterm_exit_cleanly() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     run_bg(r, "t", "trap 'echo got term; exit 0' TERM; echo ready; while true; do sleep 0.2; done");
     eventually("ready", || text(&yarc(r, &["logs", "t"]).stdout).contains("ready"));
@@ -380,7 +382,7 @@ fn stop_lets_a_container_that_handles_sigterm_exit_cleanly() {
 #[test]
 #[ignore]
 fn stop_escalates_to_sigkill_after_the_timeout() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     // `sleep` as PID 1 has no SIGTERM handler, so the signal is ignored.
     assert_eq!(yarc(r, &["run", "-d", "--name", "k", IMAGE, "sleep", "100"]).status.code(), Some(0));
@@ -394,7 +396,7 @@ fn stop_escalates_to_sigkill_after_the_timeout() {
 #[test]
 #[ignore]
 fn kill_sends_the_requested_signal_and_defaults_to_sigkill() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     run_bg(r, "s", "trap 'echo usr1' USR1; echo ready; while true; do sleep 0.2; done");
     eventually("ready", || text(&yarc(r, &["logs", "s"]).stdout).contains("ready"));
@@ -414,7 +416,7 @@ fn kill_sends_the_requested_signal_and_defaults_to_sigkill() {
 #[test]
 #[ignore]
 fn rm_refuses_running_containers_unless_forced() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     assert_eq!(yarc(r, &["run", "-d", "--name", "busy", IMAGE, "sleep", "100"]).status.code(), Some(0));
     let refused = yarc(r, &["rm", "busy"]);
@@ -434,7 +436,7 @@ fn rm_refuses_running_containers_unless_forced() {
 #[test]
 #[ignore]
 fn wait_prints_the_exit_code() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     run_bg(r, "w", "sleep 1; exit 5");
     let out = yarc(r, &["wait", "w"]);
@@ -450,7 +452,7 @@ fn wait_prints_the_exit_code() {
 #[test]
 #[ignore]
 fn logs_follow_streams_until_the_container_exits() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     run_bg(r, "f", "for i in 1 2 3; do echo line $i; sleep 0.5; done; echo end >&2");
     let mut follower = Command::new(env!("CARGO_BIN_EXE_yarc"))
@@ -481,7 +483,7 @@ fn logs_follow_streams_until_the_container_exits() {
 #[test]
 #[ignore]
 fn the_whole_lifecycle_with_unprefixed_commands() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     let id = text(&yarc(r, &["create", "--name", "life", IMAGE, "sh", "-c", "echo hello; sleep 100"]).stdout);
     assert_eq!(id.trim(), "life");
@@ -500,7 +502,7 @@ fn the_whole_lifecycle_with_unprefixed_commands() {
 #[test]
 #[ignore]
 fn exec_runs_inside_the_running_container() {
-    let root = tempfile::tempdir().unwrap();
+    let root = common::seeded_root();
     let r = root.path();
     let out = yarc(r, &["run", "-d", "--name", "x", "-e", "A=1", IMAGE, "sh", "-c",
         "echo hello > /tmp/marker; trap 'exit 0' TERM; while true; do sleep 0.2; done"]);

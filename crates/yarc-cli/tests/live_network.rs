@@ -4,6 +4,8 @@
 
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Output};
@@ -17,7 +19,7 @@ struct Proj {
 
 impl Proj {
     fn new(yaml: &str) -> Proj {
-        let p = Proj { root: tempfile::tempdir().unwrap(), dir: tempfile::tempdir().unwrap() };
+        let p = Proj { root: common::seeded_root(), dir: tempfile::tempdir().unwrap() };
         p.write(yaml);
         p
     }
@@ -123,9 +125,12 @@ fn services_reach_each_other_by_name_and_the_host_reaches_published_ports() {
     eventually("the published port", || read_from(port) == "pong\n");
     assert!(p.ps().contains(&format!("127.0.0.1:{port}->9000/tcp")), "{}", p.ps());
 
-    // the only interface inside is the project's own loopback
+    // inside there is the project's own loopback, plus at most the one
+    // interface pasta adds for outbound traffic (when passt is installed)
     let nets = text(&p.exec("demo-web-1", &["sh", "-c", "tail -n +3 /proc/net/dev | cut -d: -f1"]).stdout);
-    assert_eq!(nets.trim(), "lo");
+    let names: Vec<&str> = nets.split_whitespace().collect();
+    assert_eq!(names.first(), Some(&"lo"), "{names:?}");
+    assert!(names.len() <= 2, "unexpected interfaces: {names:?}");
 }
 
 #[test]

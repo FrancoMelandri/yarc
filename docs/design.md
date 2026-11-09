@@ -112,7 +112,8 @@ Still to come: `exec`, `restart`.
 4. **M3** detached containers: shim, state, logs, `ps/logs/stop/kill/wait/rm`. ✔
 5. **M4** projects: `up/down/project ps|logs|stop|config` (a ✔), exec + healthchecks (b ✔),
    project network, names and published ports (c ✔), volumes (d ✔).
-6. **M5** the agent and Windows via WSL2 (planned, see `docs/progress/M5-plan.md`; awaiting decisions).
+6. **M5** the agent and Windows via WSL2 (see `docs/progress/M5-plan.md`): shared image cache for live tests (d ✔),
+   `yarc-proto` (a1), output sink (a2), stdio agent (a3), Windows client (a4), ports and signals (b), setup (c).
 7. **M6** macOS via Virtualization.framework.
 
 ## Dev environment

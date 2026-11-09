@@ -4,6 +4,8 @@
 
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -16,7 +18,7 @@ struct Proj {
 
 impl Proj {
     fn new(yaml: &str) -> Proj {
-        let p = Proj { root: tempfile::tempdir().unwrap(), dir: tempfile::tempdir().unwrap() };
+        let p = Proj { root: common::seeded_root(), dir: tempfile::tempdir().unwrap() };
         p.write(yaml);
         p
     }

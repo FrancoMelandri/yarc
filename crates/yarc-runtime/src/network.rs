@@ -35,6 +35,12 @@ pub struct NetInfo {
     /// Host pid of the holder; `/proc/<pid>/ns/{user,net}` are what containers join.
     pub pid: u32,
     pub published: Vec<PortMap>,
+    /// Whether `pasta` gave the namespace an outbound network.
+    #[serde(default)]
+    pub outbound: bool,
+    /// Why there is none, when it could not be set up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbound_note: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +186,7 @@ mod tests {
     fn info_roundtrip_and_missing_info() {
         let (_r, net) = net();
         assert_eq!(net.info().unwrap(), None);
-        let info = NetInfo { pid: 42, published: vec![PortMap { host: 8080, container: 80 }] };
+        let info = NetInfo { pid: 42, published: vec![PortMap { host: 8080, container: 80 }], outbound: true, outbound_note: None };
         net.create_dir().unwrap();
         net.write_info(&info).unwrap();
         assert_eq!(net.info().unwrap(), Some(info));
@@ -192,7 +198,7 @@ mod tests {
     fn the_holder_lock_defines_liveness_and_guards_the_pid() {
         let (_r, net) = net();
         assert!(!net.is_alive().unwrap(), "nothing there yet");
-        net.write_info(&NetInfo { pid: 7, published: vec![] }).unwrap();
+        net.write_info(&NetInfo { pid: 7, published: vec![], outbound: false, outbound_note: None }).unwrap();
         assert_eq!(net.alive_pid().unwrap(), None, "a recorded pid without a holder is not trusted");
 
         let held = net.try_acquire().unwrap().expect("free");
@@ -228,5 +234,18 @@ mod tests {
         let mut ports = vec![PortMap { host: 90, container: 1 }, PortMap { host: 80, container: 2 }, PortMap { host: 80, container: 1 }];
         ports.sort();
         assert_eq!(ports.iter().map(|p| (p.host, p.container)).collect::<Vec<_>>(), [(80, 1), (80, 2), (90, 1)]);
+    }
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+
+    #[test]
+    fn net_json_written_before_outbound_support_still_reads() {
+        let old = r#"{"pid": 5, "published": [{"host": 8080, "container": 80}]}"#;
+        let info: NetInfo = serde_json::from_str(old).unwrap();
+        assert!(!info.outbound);
+        assert_eq!(info.outbound_note, None);
     }
 }

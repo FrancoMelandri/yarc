@@ -126,6 +126,9 @@ pub struct HolderArgs {
     /// `HOST:CONTAINER` TCP port to publish on 127.0.0.1 (repeatable)
     #[arg(long = "publish", value_name = "HOST:CONTAINER")]
     pub publish: Vec<String>,
+    /// The `pasta` binary that gives the network outbound access (none: no outbound)
+    #[arg(long, value_name = "PATH")]
+    pub pasta: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

@@ -589,7 +589,8 @@ fn ensure_network(root: &Path, store: &ContainerStore, loaded: &Loaded) -> Resul
         stop_all(store, &running, Duration::from_secs(10))?;
         yarc_runtime::stop_holder(&net, Duration::from_secs(5))?;
     }
-    crate::detached::start_holder(root, &loaded.name, &wanted).context("cannot create the project network")?;
+    let pasta = crate::detached::find_pasta();
+    crate::detached::start_holder(root, &loaded.name, &wanted, pasta.as_deref()).context("cannot create the project network")?;
     Ok(net)
 }
 
@@ -680,6 +681,15 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
     }
     let net = ensure_network(root, &store, &loaded)?;
     net.write_hosts(&host_names(&loaded))?;
+    if let Some(info) = net.info()? {
+        if !info.outbound {
+            eprintln!(
+                "warning: the project has no outbound network ({}); services can only reach each other. \
+                 Install passt (provides `pasta`) and recreate the network (`yarc down`, `yarc up`) to enable it",
+                info.outbound_note.as_deref().unwrap_or("unknown reason")
+            );
+        }
+    }
 
     let mut sources = Vec::new();
     for service in &loaded.order {

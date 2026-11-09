@@ -157,7 +157,12 @@ pub fn parse_publish(s: &str) -> Result<yarc_runtime::PortMap> {
 /// until it reports `ready`, or the reason it could not start (e.g. a host
 /// port that is already in use).
 #[cfg(target_os = "linux")]
-pub fn start_holder(root: &Path, project: &str, publish: &[yarc_runtime::PortMap]) -> Result<()> {
+pub fn start_holder(
+    root: &Path,
+    project: &str,
+    publish: &[yarc_runtime::PortMap],
+    pasta: Option<&Path>,
+) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::{self, BufRead, BufReader};
     use std::os::unix::process::CommandExt;
@@ -176,6 +181,9 @@ pub fn start_holder(root: &Path, project: &str, publish: &[yarc_runtime::PortMap
     cmd.arg("--root").arg(root).arg("__holder").arg(project);
     for p in publish {
         cmd.arg("--publish").arg(format!("{}:{}", p.host, p.container));
+    }
+    if let Some(pasta) = pasta {
+        cmd.arg("--pasta").arg(pasta);
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(log);
     // SAFETY: setsid(2) is async-signal-safe; the holder must outlive this
@@ -206,7 +214,12 @@ pub fn start_holder(root: &Path, project: &str, publish: &[yarc_runtime::PortMap
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn start_holder(_root: &Path, _project: &str, _publish: &[yarc_runtime::PortMap]) -> Result<()> {
+pub fn start_holder(
+    _root: &Path,
+    _project: &str,
+    _publish: &[yarc_runtime::PortMap],
+    _pasta: Option<&Path>,
+) -> Result<()> {
     anyhow::bail!("running projects needs Linux; run yarc inside WSL")
 }
 
@@ -217,7 +230,7 @@ pub fn holder(root: &Path, args: crate::cli::HolderArgs) -> Result<()> {
 
     let net = yarc_runtime::ProjectNet::new(root, &args.project)?;
     let publish = args.publish.iter().map(|p| parse_publish(p)).collect::<Result<Vec<_>>>()?;
-    yarc_runtime::run_holder(&net, &publish, |outcome| {
+    yarc_runtime::run_holder(&net, &publish, args.pasta.as_deref(), |outcome| {
         let mut out = io::stdout();
         let _ = match outcome {
             Ok(()) => writeln!(out, "ready"),
@@ -264,5 +277,40 @@ mod tests {
             assert_eq!(code, 125, "{bad}");
             assert!(msg.contains("shim"), "{bad}: {msg}");
         }
+    }
+}
+
+/// Where to find `pasta`: `YARC_PASTA` (an empty value turns outbound networking
+/// off), otherwise the first `pasta` on `PATH`.
+pub fn find_pasta() -> Option<std::path::PathBuf> {
+    locate_pasta(std::env::var_os("YARC_PASTA"), std::env::var_os("PATH"))
+}
+
+fn locate_pasta(explicit: Option<std::ffi::OsString>, path: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    if let Some(p) = explicit {
+        return (!p.is_empty()).then(|| std::path::PathBuf::from(p));
+    }
+    std::env::split_paths(&path?).map(|d| d.join("pasta")).find(|c| c.is_file())
+}
+
+#[cfg(test)]
+mod pasta_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn explicit_path_wins_and_empty_disables() {
+        assert_eq!(locate_pasta(Some("/x/pasta".into()), Some("/bin".into())), Some("/x/pasta".into()));
+        assert_eq!(locate_pasta(Some(OsString::new()), Some("/bin".into())), None);
+    }
+
+    #[test]
+    fn path_is_searched_for_a_file_named_pasta() {
+        let dir = std::env::temp_dir().join(format!("yarc-pasta-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(locate_pasta(None, Some(dir.clone().into_os_string())), None);
+        std::fs::write(dir.join("pasta"), "").unwrap();
+        assert_eq!(locate_pasta(None, Some(dir.clone().into_os_string())), Some(dir.join("pasta")));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

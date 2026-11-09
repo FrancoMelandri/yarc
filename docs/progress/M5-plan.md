@@ -30,3 +30,6 @@ Goal: `yarc.exe` on Windows drives a Linux `yarc` inside WSL2 as if it were loca
 
 ## Open
 Forwarding automatic on Windows by default (assumed) or behind a flag until trusted.
+
+## After M5
+Next planned area: Compose support, see `docs/progress/C-compose-plan.md` (planned, to start next session).

@@ -384,12 +384,14 @@ pub fn container_start(root: &Path, args: crate::cli::StartArgs) -> Result<u8> {
     Ok((code & 0xff) as u8)
 }
 
-/// A foreground container with limits runs in a systemd scope that carries them: this process
-/// is replaced by the same `container start` inside the scope (same terminal, same exit code).
+/// A foreground container with limits runs in a systemd scope that carries them: the same
+/// `container start` runs inside the scope as a child (same terminal), and its exit code is
+/// ours. A child, not an `exec`, so that what the caller does afterwards (`run --rm` removing
+/// the container) still happens.
 #[cfg(target_os = "linux")]
 fn restart_in_scope(root: &Path, spec: &yarc_runtime::ContainerSpec, debug: bool) -> Result<u8> {
     use anyhow::Context;
-    use std::os::unix::process::CommandExt;
+    use std::os::unix::process::ExitStatusExt;
 
     yarc_runtime::check_host(&spec.resources, yarc_runtime::host_cpus())?;
     yarc_runtime::require_scopes()?;
@@ -399,7 +401,9 @@ fn restart_in_scope(root: &Path, spec: &yarc_runtime::ContainerSpec, debug: bool
     if debug {
         cmd.arg("--debug");
     }
-    Err(anyhow::Error::new(cmd.exec()).context("cannot enter the limits scope"))
+    let status = cmd.status().context("cannot enter the limits scope")?;
+    // killed by a signal: the shell's convention
+    Ok(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)) as u8)
 }
 
 /// Prints a container's recorded output: stdout lines to stdout, stderr lines

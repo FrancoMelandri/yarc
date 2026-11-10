@@ -1,8 +1,12 @@
 //! Parses `yarc.yaml` into a validated project model.
 
+mod dotenv;
+mod interpolate;
 mod model;
 mod validate;
 
+pub use dotenv::{parse_dotenv, DotenvError};
+pub use interpolate::{interpolate, InterpolationError};
 pub use model::*;
 
 use thiserror::Error;

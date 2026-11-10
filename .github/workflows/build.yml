@@ -1,0 +1,136 @@
+# Build: produces the release binaries for Linux and Windows.
+#
+#   * every push to main and every manual run -> artifacts on the workflow run
+#   * a tag `vX.Y.Z`                           -> the same artifacts, plus a GitHub Release
+#
+# yarc has two halves. The Linux binary is the runtime (it also runs as the agent inside
+# WSL); the Windows binary is the client that forwards commands to it. A Windows user needs
+# both, so a release always carries both.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: linux-x86_64
+            # Oldest hosted Ubuntu: the binary links glibc dynamically, so building on an
+            # older glibc keeps it runnable on older distributions (Ubuntu 22.04+, Debian 12+).
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            exe: yarc
+            archive: tar.gz
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe: yarc.exe
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Version
+        id: version
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="yarc-cli"))')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the crate version $version"
+            exit 1
+          fi
+
+      - name: Test
+        run: cargo test --workspace --locked --release --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build -p yarc-cli --release --locked --target ${{ matrix.target }}
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          out=$(./target/${{ matrix.target }}/release/${{ matrix.exe }} --version)
+          echo "$out"
+          [[ "$out" == "yarc ${{ steps.version.outputs.version }}" ]]
+
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          name="yarc-${{ steps.version.outputs.version }}-${{ matrix.name }}"
+          mkdir "dist/" "dist/$name"
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" README.md "dist/$name/"
+          cd dist
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+            file="$name.zip"
+          else
+            tar -czf "$name.tar.gz" "$name"
+            file="$name.tar.gz"
+          fi
+          sha256sum "$file" > "$file.sha256"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          ls -l
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yarc-${{ matrix.name }}
+          path: |
+            dist/${{ steps.package.outputs.file }}
+            dist/${{ steps.package.outputs.file }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "Windows needs both archives: the Windows client (\`yarc.exe\`) forwards to the Linux binary installed in WSL." \
+            --draft

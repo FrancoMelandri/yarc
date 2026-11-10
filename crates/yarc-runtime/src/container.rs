@@ -349,6 +349,8 @@ mod tests {
     }
 
     /// Pretends everything in `dir` was last touched a minute ago.
+    /// (Unix only: opening a directory to set its times is not possible on Windows.)
+    #[cfg(unix)]
     fn age(dir: &Path) {
         let then = std::time::SystemTime::now() - Duration::from_secs(60);
         let touch = |p: &Path| File::open(p).unwrap().set_modified(then).unwrap();
@@ -405,6 +407,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_husk_with_only_a_stale_lock_does_not_block_its_name() {
         let (_r, store) = store();
         let dir = store.container_dir("web");
@@ -419,6 +422,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn only_unfinished_idle_directories_are_reclaimed() {
         let (_r, store) = store();
         // a creation killed while unpacking (rootfs but no config)

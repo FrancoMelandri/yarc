@@ -7,6 +7,10 @@
 # (a tag pushed with the default GITHUB_TOKEN does not trigger workflows by itself). Pushing
 # a `v*` tag by hand works too.
 #
+# The tests are not run again here: CI runs them on every pull request, on Linux and on
+# Windows, before anything reaches main, so the release does not wait for a second run of the
+# same suite (the smoke test below still runs the built binary).
+#
 # yarc has two halves. The Linux binary is the runtime (it also runs as the agent inside
 # WSL); the Windows binary is the client that forwards commands to it. A Windows user needs
 # both, so a release always carries both.
@@ -71,9 +75,6 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match the crate version $version"
             exit 1
           fi
-
-      - name: Test
-        run: cargo test --workspace --locked --no-fail-fast --release --target ${{ matrix.target }}
 
       - name: Build
         run: cargo build -p yarc-cli --release --locked --target ${{ matrix.target }}

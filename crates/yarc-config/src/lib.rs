@@ -4,6 +4,7 @@ mod compose;
 mod dotenv;
 mod interpolate;
 mod model;
+mod resources;
 mod restart;
 mod validate;
 
@@ -11,6 +12,9 @@ pub use compose::parse_compose;
 pub use dotenv::{parse_dotenv, DotenvError};
 pub use interpolate::{interpolate, InterpolationError};
 pub use model::*;
+pub use resources::{
+    format_size, parse_cpus, parse_memory, parse_memory_swap, parse_pids, ResourceError, Resources, MIN_MEMORY,
+};
 pub use restart::{ParsePolicyError, RestartPolicy};
 
 use thiserror::Error;

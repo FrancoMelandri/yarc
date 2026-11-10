@@ -4,7 +4,9 @@
 //! `ports` (short form), `volumes` (short form), `depends_on` (list or map with
 //! `condition`), `user`, `working_dir`, `healthcheck` (`test`, `interval`),
 //! `container_name`, `secrets` (short form, file secrets), `profiles`, `stop_grace_period`
-//! and `restart`. A service may carry an `x-yarc:` block with yarc-only settings (`user`). Top-level `volumes` may only declare names. `x-...` keys and the
+//! `restart`, and the limits `mem_limit`, `memswap_limit`, `cpus`, `pids_limit` and
+//! `deploy.resources.limits` (`memory`, `cpus`, `pids`; `reservations` is accepted and ignored,
+//! there is nothing to reserve). A service may carry an `x-yarc:` block with yarc-only settings (`user`). Top-level `volumes` may only declare names. `x-...` keys and the
 //! obsolete `version` are ignored; every other key is an error, so nothing is silently
 //! dropped.
 //!
@@ -19,7 +21,8 @@ use serde_yaml_ng::Value;
 use crate::interpolate::interpolate;
 use crate::model::{parse_duration, parse_port, parse_volume, DEFAULT_HEALTH_INTERVAL};
 use crate::{
-    validate, Condition, ConfigError, Health, PortMapping, Project, RestartPolicy, SecretMount, Service, VolumeSource,
+    validate, Condition, ConfigError, Health, PortMapping, Project, ResourceError, Resources, RestartPolicy,
+    SecretMount, Service, VolumeSource,
 };
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +64,11 @@ struct RawService {
     profiles: Vec<String>,
     stop_grace_period: Option<String>,
     restart: Option<Value>,
+    mem_limit: Option<Value>,
+    memswap_limit: Option<Value>,
+    cpus: Option<Value>,
+    pids_limit: Option<Value>,
+    deploy: Option<Value>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -345,6 +353,8 @@ where
         }
         Some(_) => return Err(field_err(name, "restart", "must be one of no, always, unless-stopped, on-failure[:N]")),
     };
+    let resources =
+        convert_resources(name, [&raw.mem_limit, &raw.memswap_limit, &raw.cpus, &raw.pids_limit], &raw.deploy)?;
     let stop_grace_period = raw
         .stop_grace_period
         .map(|s| parse_duration(&s).ok_or_else(|| ConfigError::InvalidDuration { service: name.into(), value: s }))
@@ -361,6 +371,7 @@ where
         profiles: raw.profiles,
         stop_grace_period,
         restart,
+        resources,
         user,
         env,
         ports,
@@ -368,6 +379,89 @@ where
         health,
         needs,
     })
+}
+
+/// The limits of a service, from the service-level keys and/or `deploy.resources.limits`
+/// (naming the same limit twice with different values is an error).
+fn convert_resources(name: &str, keys: [&Option<Value>; 4], deploy: &Option<Value>) -> Result<Resources, ConfigError> {
+    // (limit, where it was written) for each of memory, swap, cpus, pids
+    let mut found: [Option<(String, String)>; 4] = Default::default();
+    let mut put = |slot: usize, key: &str, v: &Value| -> Result<(), ConfigError> {
+        let text = scalar(v).ok_or_else(|| field_err(name, key, "must be a number or a size such as 512m"))?;
+        match &found[slot] {
+            Some((other, _)) if *other != text => {
+                Err(field_err(name, key, "is also set elsewhere with a different value"))
+            }
+            Some(_) => Ok(()),
+            None => {
+                found[slot] = Some((text, key.to_string()));
+                Ok(())
+            }
+        }
+    };
+    for (slot, key) in ["mem_limit", "memswap_limit", "cpus", "pids_limit"].into_iter().enumerate() {
+        if let Some(v) = keys[slot] {
+            put(slot, key, v)?;
+        }
+    }
+    if let Some(deploy) = deploy {
+        let unsupported = |scope: &str, key: &str| ConfigError::UnsupportedKey {
+            scope: format!("service '{name}' {scope}"),
+            key: key.to_string(),
+        };
+        let map = |v: &Value, key: &str| -> Result<serde_yaml_ng::Mapping, ConfigError> {
+            match v {
+                Value::Null => Ok(Default::default()),
+                Value::Mapping(m) => Ok(m.clone()),
+                _ => Err(field_err(name, key, "must be a mapping")),
+            }
+        };
+        for (k, v) in map(deploy, "deploy")? {
+            let k = k.as_str().unwrap_or("?").to_string();
+            if k != "resources" {
+                return Err(unsupported("deploy", &k));
+            }
+            for (k, v) in map(&v, "deploy.resources")? {
+                match k.as_str().unwrap_or("?") {
+                    "limits" => {
+                        for (k, v) in map(&v, "deploy.resources.limits")? {
+                            let k = k.as_str().unwrap_or("?").to_string();
+                            let slot = match k.as_str() {
+                                "memory" => 0,
+                                "cpus" => 2,
+                                "pids" => 3,
+                                _ => return Err(unsupported("deploy.resources.limits", &k)),
+                            };
+                            put(slot, &format!("deploy.resources.limits.{k}"), &v)?;
+                        }
+                    }
+                    "reservations" => {
+                        for (k, _) in map(&v, "deploy.resources.reservations")? {
+                            let k = k.as_str().unwrap_or("?");
+                            if !matches!(k, "memory" | "cpus") {
+                                return Err(unsupported("deploy.resources.reservations", k));
+                            }
+                        }
+                    }
+                    other => return Err(unsupported("deploy.resources", other)),
+                }
+            }
+        }
+    }
+    let at = |slot: usize| found[slot].clone();
+    let wrap = |key: &str, e: ResourceError| field_err(name, key, e.reason);
+    let parse = |slot: usize, f: fn(&str) -> Result<u64, ResourceError>| -> Result<Option<u64>, ConfigError> {
+        at(slot).map(|(text, key)| f(&text).map_err(|e| wrap(&key, e))).transpose()
+    };
+    let resources = Resources {
+        memory: parse(0, crate::parse_memory)?,
+        memory_swap: parse(1, crate::parse_memory_swap)?,
+        cpus_millis: at(2).map(|(t, key)| crate::parse_cpus(&t).map_err(|e| wrap(&key, e))).transpose()?,
+        pids: at(3).map(|(t, key)| crate::parse_pids(&t).map_err(|e| wrap(&key, e))).transpose()?.flatten(),
+    };
+    let swap_key = found[1].as_ref().map_or("memswap_limit", |(_, k)| k.as_str());
+    resources.check().map_err(|e| wrap(swap_key, e))?;
+    Ok(resources)
 }
 
 fn convert_environment<F>(name: &str, env: Option<Value>, lookup: &F) -> Result<BTreeMap<String, String>, ConfigError>

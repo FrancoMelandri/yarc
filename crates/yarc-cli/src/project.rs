@@ -321,6 +321,10 @@ pub fn service_hash(service: &Service) -> String {
     if !service.restart.is_no() {
         canonical.push_str(&format!("|restart:{}", service.restart));
     }
+    // Only when set, so containers made before limits existed keep their hash.
+    if !service.resources.is_unset() {
+        canonical.push_str(&format!("|resources:{:?}", service.resources));
+    }
     Digest::of(canonical.as_bytes()).hex().to_string()
 }
 
@@ -1157,6 +1161,12 @@ mod tests {
         assert_ne!(h("    restart: always\n", ""), h("    restart: on-failure:3\n", ""));
         // ... but spelling the default out is not a change
         assert_eq!(plain, h("    restart: \"no\"\n", ""));
+        // limits are part of the definition too, and only when set
+        assert_ne!(plain, h("    mem_limit: 512m\n", ""));
+        assert_ne!(h("    mem_limit: 512m\n", ""), h("    mem_limit: 1g\n", ""));
+        assert_ne!(h("    cpus: 1\n", ""), h("    cpus: 2\n", ""));
+        let deploy = "    deploy:\n      resources:\n        limits:\n          memory: 512m\n";
+        assert_eq!(h("    mem_limit: 512m\n", ""), h(deploy, ""));
         let with = h("    secrets: [s]\n", "secrets:\n  s:\n    file: ./f\n");
         assert_ne!(plain, with);
         assert_ne!(with, h("    secrets: [s]\n", "secrets:\n  s:\n    file: ./other\n"));

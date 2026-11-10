@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::{ConfigError, RestartPolicy};
+use crate::{ConfigError, ResourceError, Resources, RestartPolicy};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
@@ -66,6 +66,8 @@ pub struct Service {
     pub stop_grace_period: Option<Duration>,
     /// What the supervisor does when the container exits.
     pub restart: RestartPolicy,
+    /// CPU and memory limits; the default is none.
+    pub resources: Resources,
     /// Replaces the image's `USER` (name or `uid[:gid]`); `None` keeps it.
     pub user: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -151,6 +153,54 @@ struct RawService {
     #[serde(default)]
     needs: BTreeMap<String, Condition>,
     restart: Option<String>,
+    resources: Option<RawResources>,
+}
+
+/// `resources:` of a service: a number (bytes, CPUs, processes) or text such as `512m`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawResources {
+    memory: Option<RawAmount>,
+    memory_swap: Option<RawAmount>,
+    cpus: Option<RawAmount>,
+    pids: Option<RawAmount>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawAmount {
+    Text(String),
+    Int(i64),
+    Float(f64),
+}
+
+impl RawAmount {
+    fn text(&self) -> String {
+        match self {
+            RawAmount::Text(s) => s.clone(),
+            RawAmount::Int(n) => n.to_string(),
+            RawAmount::Float(x) => x.to_string(),
+        }
+    }
+}
+
+impl RawResources {
+    fn into_resources(self, service: &str) -> Result<Resources, ConfigError> {
+        let field = |e: ResourceError| ConfigError::Field {
+            service: service.into(),
+            field: format!("resources.{}", e.field),
+            reason: e.reason,
+        };
+        let text = |a: &Option<RawAmount>| a.as_ref().map(RawAmount::text);
+        let resources = Resources {
+            memory: text(&self.memory).map(|t| crate::parse_memory(&t)).transpose().map_err(field)?,
+            memory_swap: text(&self.memory_swap).map(|t| crate::parse_memory_swap(&t)).transpose().map_err(field)?,
+            cpus_millis: text(&self.cpus).map(|t| crate::parse_cpus(&t)).transpose().map_err(field)?,
+            pids: text(&self.pids).map(|t| crate::parse_pids(&t)).transpose().map_err(field)?.flatten(),
+        };
+        resources.check().map_err(field)?;
+        Ok(resources)
+    }
 }
 
 /// `user: root`, `user: "1000:1000"` or a bare `user: 0`.
@@ -221,6 +271,7 @@ impl RawService {
                 })?,
                 None => RestartPolicy::No,
             },
+            resources: self.resources.map(|r| r.into_resources(name)).transpose()?.unwrap_or_default(),
             user,
             env: self.env,
             ports,

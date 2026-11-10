@@ -1,6 +1,6 @@
 # Compose support — plan
 
-Status: **in progress**. Decisions: the defaults. C1 (`C1-interpolation-dotenv.md`), C2 (`C2-compose-reader.md`) and C3 (`C3-secrets-profiles-grace.md`) done; next C4 (`restart`, design first).
+Status: **in progress**. Decisions: the defaults (C4 design accepted). C1-C3 done; C4a done (`C4a-restart-core.md`); next C4b (supervisor, stop requests, shim, live tests).
 
 Goal: `yarc -f docker-compose.yml up` works on a real bundle unchanged (the two bundles under `tmp/ssw-pms-fias-inspector` and `tmp/ssw-pms-fias-aero`), instead of a hand-written `yarc.yaml`.
 

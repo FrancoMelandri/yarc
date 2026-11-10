@@ -8,6 +8,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, RuntimeError};
+use crate::restart::RestartPolicy;
 
 /// Used when neither the image nor the user sets `PATH` (same as Docker).
 pub const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -178,9 +179,17 @@ pub struct ContainerSpec {
     pub hosts_file: Option<PathBuf>,
     #[serde(default)]
     pub volumes: Vec<VolumeSpec>,
+    /// What the supervisor does when the container exits (detached containers only).
+    #[serde(default, skip_serializing_if = "RestartPolicy::is_no")]
+    pub restart: RestartPolicy,
 }
 
 impl ContainerSpec {
+    pub fn with_restart(mut self, restart: RestartPolicy) -> Self {
+        self.restart = restart;
+        self
+    }
+
     pub fn with_volumes(mut self, volumes: Vec<VolumeSpec>) -> Self {
         self.volumes = volumes;
         self
@@ -220,6 +229,7 @@ impl ContainerSpec {
             project_net: None,
             hosts_file: None,
             volumes: Vec::new(),
+            restart: RestartPolicy::No,
         }
     }
 }
@@ -240,6 +250,22 @@ mod tests {
             working_dir: None,
             user: None,
         }
+    }
+
+    #[test]
+    fn the_restart_policy_is_stored_only_when_set() {
+        let p = Process { args: s(&["x"]), env: vec![], working_dir: "/".into(), user: None };
+        let plain = ContainerSpec::new("c", "img", "/r".into(), p, Network::Host);
+        assert_eq!(plain.restart, RestartPolicy::No);
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("restart"), "{json}");
+        // a config.json written before restart policies existed still loads
+        assert_eq!(serde_json::from_str::<ContainerSpec>(&json).unwrap().restart, RestartPolicy::No);
+
+        let always = plain.with_restart(RestartPolicy::OnFailure { max: Some(3) });
+        let json = serde_json::to_string(&always).unwrap();
+        assert!(json.contains("\"restart\":\"on-failure:3\""), "{json}");
+        assert_eq!(serde_json::from_str::<ContainerSpec>(&json).unwrap(), always);
     }
 
     #[test]

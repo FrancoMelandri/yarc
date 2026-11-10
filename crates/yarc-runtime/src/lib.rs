@@ -28,6 +28,7 @@ mod paths;
 mod plan;
 #[cfg(target_os = "linux")]
 mod pump;
+mod restart;
 mod spec;
 mod state;
 
@@ -46,7 +47,8 @@ pub use network::{host_search_domains, NetInfo, PortMap, ProjectNet};
 pub use netns::{run_holder, stop_holder};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
 pub use spec::{resolve_process, ContainerSpec, HealthSpec, ImageDefaults, Network, Overrides, Process, VolumeSpec, DEFAULT_PATH};
-pub use state::{describe, now_ms, ContainerState, Health, HealthStatus, Status};
+pub use restart::{Backoff, Decision, ParsePolicyError, RestartPolicy, RestartTracker, RunEnd};
+pub use state::{describe, describe_at, now_ms, ContainerState, Health, HealthStatus, Status};
 
 /// How to start a container. The descriptors become the container's stdin,
 /// stdout and stderr (`None`: inherit yarc's); [`start`] closes yarc's copies.

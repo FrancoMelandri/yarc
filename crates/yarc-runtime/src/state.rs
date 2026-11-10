@@ -53,6 +53,17 @@ pub struct ContainerState {
     /// Only for containers with a health check, and only while they run.
     #[serde(default)]
     pub health: Option<Health>,
+    /// How many times the supervisor has restarted the container since a person started it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub restarts: u32,
+    /// Set while the supervisor waits to restart the container (status `running`, no init
+    /// pid; `exit_code` / `finished_ms` describe the run that just ended).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_restart_ms: Option<u64>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl ContainerState {
@@ -65,6 +76,27 @@ impl ContainerState {
             finished_ms: None,
             exit_code: None,
             health: None,
+            restarts: 0,
+            next_restart_ms: None,
+        }
+    }
+
+    /// The same state with the restart count carried over from the earlier runs.
+    pub fn with_restarts(&self, restarts: u32) -> Self {
+        ContainerState { restarts, ..self.clone() }
+    }
+
+    /// The run ended with `exit_code` and the supervisor will start it again at
+    /// `next_restart_ms`: still supervised, but no process is running.
+    pub fn restarting(&self, exit_code: i32, finished_ms: u64, next_restart_ms: u64) -> Self {
+        ContainerState {
+            status: Status::Running,
+            pid: None,
+            exit_code: Some(exit_code),
+            finished_ms: Some(finished_ms),
+            health: None,
+            next_restart_ms: Some(next_restart_ms),
+            ..self.clone()
         }
     }
 
@@ -78,6 +110,7 @@ impl ContainerState {
             exit_code: Some(exit_code),
             finished_ms: Some(finished_ms),
             health: None,
+            next_restart_ms: None,
             ..self.clone()
         }
     }
@@ -90,15 +123,36 @@ impl ContainerState {
 }
 
 /// One-word-ish status for listings: `Created`, `Running`, `Exited (7)`,
-/// `Dead` (running on record, but nobody supervises it any more).
+/// `Dead` (running on record, but nobody supervises it any more); with details when
+/// there are any: `Running (healthy, restarted 2 times)`, `Restarting (exit 1, in 4s)`.
 pub fn describe(state: Option<&ContainerState>, supervised: bool) -> String {
+    describe_at(state, supervised, now_ms())
+}
+
+/// [`describe`] with the current time given, for tests.
+pub fn describe_at(state: Option<&ContainerState>, supervised: bool, now_ms: u64) -> String {
     match state {
         None => "Created".into(),
         Some(s) if s.status == Status::Exited => format!("Exited ({})", s.exit_code.unwrap_or(-1)),
-        Some(s) if s.is_running(supervised) => match &s.health {
-            Some(h) => format!("Running ({})", h.status.as_str()),
-            None => "Running".into(),
-        },
+        Some(s) if s.is_running(supervised) => {
+            if let Some(next) = s.next_restart_ms {
+                let exit = s.exit_code.map_or(String::new(), |c| format!("exit {c}"));
+                return match next.saturating_sub(now_ms) {
+                    0 => format!("Restarting ({exit})"),
+                    ms => format!("Restarting ({exit}, in {}s)", ms.div_ceil(1000)),
+                };
+            }
+            let mut details = Vec::new();
+            if let Some(h) = &s.health {
+                details.push(h.status.as_str().to_string());
+            }
+            match s.restarts {
+                0 => {}
+                1 => details.push("restarted 1 time".into()),
+                n => details.push(format!("restarted {n} times")),
+            }
+            if details.is_empty() { "Running".into() } else { format!("Running ({})", details.join(", ")) }
+        }
         Some(_) => "Dead".into(),
     }
 }
@@ -150,6 +204,43 @@ mod tests {
         let json = r#"{"status":"running","supervisor_pid":1,"pid":2,"started_ms":3,"finished_ms":null,"exit_code":null}"#;
         let s: ContainerState = serde_json::from_str(json).unwrap();
         assert_eq!(s.health, None);
+    }
+
+    #[test]
+    fn restart_details_in_descriptions() {
+        let run = ContainerState::running(10, Some(11), 0);
+        assert_eq!(describe_at(Some(&run.with_restarts(1)), true, 0), "Running (restarted 1 time)");
+        assert_eq!(describe_at(Some(&run.with_restarts(3)), true, 0), "Running (restarted 3 times)");
+        let health = Health { status: HealthStatus::Healthy, failing_streak: 0, last_exit: Some(0), last_check_ms: Some(5) };
+        let both = run.with_restarts(2).with_health(Some(health));
+        assert_eq!(describe_at(Some(&both), true, 0), "Running (healthy, restarted 2 times)");
+        assert_eq!(describe_at(Some(&both), false, 0), "Dead");
+
+        let waiting = run.with_restarts(2).restarting(1, 1_000, 5_500);
+        assert_eq!(waiting.status, Status::Running);
+        assert_eq!((waiting.pid, waiting.exit_code, waiting.restarts), (None, Some(1), 2));
+        assert_eq!(describe_at(Some(&waiting), true, 1_000), "Restarting (exit 1, in 5s)"); // 4.5 s rounds up
+        assert_eq!(describe_at(Some(&waiting), true, 4_500), "Restarting (exit 1, in 1s)");
+        assert_eq!(describe_at(Some(&waiting), true, 5_500), "Restarting (exit 1)");
+        assert_eq!(describe_at(Some(&waiting), true, 9_000), "Restarting (exit 1)");
+        assert_eq!(describe_at(Some(&waiting), false, 1_000), "Dead");
+
+        // a stop request ends the wait: the state becomes a plain exit, still counting restarts
+        let done = waiting.exited(1, 2_000);
+        assert_eq!((done.next_restart_ms, done.restarts), (None, 2));
+        assert_eq!(describe_at(Some(&done), false, 2_000), "Exited (1)");
+    }
+
+    #[test]
+    fn restart_fields_are_optional_in_old_files_and_absent_when_unused() {
+        let json = r#"{"status":"running","supervisor_pid":1,"pid":2,"started_ms":3,"finished_ms":null,"exit_code":null}"#;
+        let s: ContainerState = serde_json::from_str(json).unwrap();
+        assert_eq!((s.restarts, s.next_restart_ms), (0, None));
+        // files of containers that never restarted keep the old shape
+        let out = serde_json::to_string(&ContainerState::running(1, None, 5)).unwrap();
+        assert!(!out.contains("restarts") && !out.contains("next_restart_ms"), "{out}");
+        let out = serde_json::to_string(&ContainerState::running(1, None, 5).with_restarts(2).restarting(1, 6, 9)).unwrap();
+        assert!(out.contains("\"restarts\":2") && out.contains("\"next_restart_ms\":9"), "{out}");
     }
 
     #[test]

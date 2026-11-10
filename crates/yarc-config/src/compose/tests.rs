@@ -339,6 +339,21 @@ fn inactive_profiles_are_dropped() {
 }
 
 #[test]
+fn inactive_services_are_listed_with_the_profiles_that_enable_them() {
+    let p = profiled();
+    assert_eq!(
+        p.inactive_services(&[]),
+        [("dash".to_string(), vec!["observability".to_string()]), ("dbg".to_string(), vec!["debug".to_string()])]
+    );
+    assert_eq!(p.inactive_services(&["debug".into()]), [("dash".to_string(), vec!["observability".to_string()])]);
+    assert!(p.inactive_services(&["*".into()]).is_empty());
+    assert!(p.inactive_services(&["debug".into(), "observability".into()]).is_empty());
+    // what it lists is exactly what with_profiles removes
+    let kept = p.clone().with_profiles(&["debug".into()]).unwrap();
+    assert_eq!(kept.services.len() + p.inactive_services(&["debug".into()]).len(), p.services.len());
+}
+
+#[test]
 fn needing_a_service_in_an_inactive_profile_is_an_error() {
     let p = ok("services:\n  web:\n    image: i\n    depends_on: [dash]\n  dash:\n    image: i\n    profiles: [observability, extra]\n");
     let e = p.clone().with_profiles(&[]).unwrap_err().to_string();

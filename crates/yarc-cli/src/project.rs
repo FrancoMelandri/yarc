@@ -29,6 +29,8 @@ pub struct Opts {
     pub name: Option<String>,
     /// Active compose profiles.
     pub profiles: Vec<String>,
+    /// `--env-file`s; when empty the `.env` next to the project file is used.
+    pub env_files: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -38,9 +40,22 @@ pub struct Loaded {
     pub project: Project,
     /// Service names, dependencies first.
     pub order: Vec<String>,
+    /// Services left out because their profile is not active, with those profiles.
+    pub skipped: Vec<(String, Vec<String>)>,
 }
 
 // ------------------------------------------------------------------ pure parts
+
+/// One line per service left out because its profile is not active.
+pub fn skipped_notes(skipped: &[(String, Vec<String>)]) -> Vec<String> {
+    skipped
+        .iter()
+        .map(|(service, profiles)| {
+            let list = profiles.iter().map(|p| format!("--profile {p}")).collect::<Vec<_>>().join(" or ");
+            format!("{service}: not started, it belongs to profile {} (use {list} to include it)", profiles.join(", "))
+        })
+        .collect()
+}
 
 /// `My App!` → `my-app`. `None` when nothing usable is left.
 pub fn sanitize_project_name(raw: &str) -> Option<String> {
@@ -369,24 +384,49 @@ fn is_compose_file(file: &Path) -> bool {
         .is_some_and(|n| n.starts_with("yarc."))
 }
 
-/// Process environment layered over the `.env` file next to the compose file.
-fn compose_variables(dir: &Path) -> Result<BTreeMap<String, String>> {
-    let env_file = dir.join(".env");
-    if !env_file.is_file() {
-        return Ok(BTreeMap::new());
+/// Variables for compose interpolation, from the `--env-file`s (later ones win) or, when none
+/// were given, the `.env` next to the project file if there is one. Like Docker Compose, an
+/// explicit `--env-file` replaces `.env`, and must exist. The process environment is
+/// consulted first by the caller, so it always wins.
+fn compose_variables(dir: &Path, env_files: &[PathBuf]) -> Result<BTreeMap<String, String>> {
+    let files: Vec<PathBuf> = if env_files.is_empty() {
+        Some(dir.join(".env")).filter(|p| p.is_file()).into_iter().collect()
+    } else {
+        env_files.to_vec()
+    };
+    let mut merged = BTreeMap::new();
+    for file in files {
+        let path = std::path::absolute(&file).with_context(|| format!("cannot resolve {}", file.display()))?;
+        let text = std::fs::read_to_string(&path).with_context(|| format!("cannot read env file {}", path.display()))?;
+        let vars = yarc_config::parse_dotenv(&text, &|n: &str| std::env::var(n).ok().or_else(|| merged.get(n).cloned()))
+            .with_context(|| path.display().to_string())?;
+        merged.extend(vars);
     }
-    let text = std::fs::read_to_string(&env_file).with_context(|| format!("cannot read {}", env_file.display()))?;
-    yarc_config::parse_dotenv(&text, &|n: &str| std::env::var(n).ok()).with_context(|| env_file.display().to_string())
+    Ok(merged)
 }
 
-fn parse_project_file(file: &Path, text: &str) -> Result<Project> {
+fn parse_project_file(file: &Path, text: &str, dotenv: &BTreeMap<String, String>) -> Result<Project> {
     let parsed = if is_compose_file(file) {
-        let dotenv = compose_variables(file.parent().unwrap_or(Path::new(".")))?;
         yarc_config::parse_compose(text, &|n: &str| std::env::var(n).ok().or_else(|| dotenv.get(n).cloned()))
     } else {
         yarc_config::parse(text)
     };
     parsed.with_context(|| file.display().to_string())
+}
+
+/// The profiles to activate: `--profile` flags, else `COMPOSE_PROFILES` from the process
+/// environment (`process_set`: it is set, even if empty, which then means none), else
+/// `COMPOSE_PROFILES` from the env files, like Docker Compose, whose installers write it
+/// into `.env`. Comma separated; empty entries are ignored.
+fn active_profiles(requested: &[String], process_set: bool, dotenv: &BTreeMap<String, String>) -> Vec<String> {
+    let split = |items: &mut dyn Iterator<Item = &str>| -> Vec<String> {
+        items.map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect()
+    };
+    let from_flags = split(&mut requested.iter().map(String::as_str));
+    if !from_flags.is_empty() || process_set {
+        return from_flags;
+    }
+    split(&mut dotenv.get("COMPOSE_PROFILES").into_iter().flat_map(|v| v.split(',')))
 }
 
 pub fn load(opts: &Opts) -> Result<Loaded> {
@@ -395,7 +435,15 @@ pub fn load(opts: &Opts) -> Result<Loaded> {
     let name = project_name(opts)?;
     let file = std::path::absolute(&opts.file).with_context(|| format!("cannot resolve {}", opts.file.display()))?;
     let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read {}", file.display()))?;
-    let project = parse_project_file(&file, &text)?.with_profiles(&opts.profiles).with_context(|| file.display().to_string())?;
+    let dotenv = if is_compose_file(&file) {
+        compose_variables(file.parent().unwrap_or(Path::new(".")), &opts.env_files)?
+    } else {
+        BTreeMap::new()
+    };
+    let profiles = active_profiles(&opts.profiles, std::env::var_os("COMPOSE_PROFILES").is_some(), &dotenv);
+    let full = parse_project_file(&file, &text, &dotenv)?;
+    let skipped = full.inactive_services(&profiles);
+    let project = full.with_profiles(&profiles).with_context(|| file.display().to_string())?;
     if project.services.is_empty() {
         bail!("{} defines no services", file.display());
     }
@@ -404,7 +452,7 @@ pub fn load(opts: &Opts) -> Result<Loaded> {
     }
     published_ports(&project)?; // duplicates are a mistake in the file
     let order = start_order(&project)?;
-    Ok(Loaded { name, file, project, order })
+    Ok(Loaded { name, file, project, order, skipped })
 }
 
 pub fn project_containers(store: &ContainerStore, project: &str) -> Result<Vec<ContainerSpec>> {
@@ -426,6 +474,9 @@ pub fn config(opts: &Opts) -> Result<()> {
     let loaded = load(opts)?;
     println!("project: {}", loaded.name);
     println!("file:    {}", loaded.file.display());
+    for note in skipped_notes(&loaded.skipped) {
+        println!("not included: {note}");
+    }
     println!("services (start order):");
     let width = loaded.order.iter().map(String::len).max().unwrap_or(0);
     for name in &loaded.order {
@@ -492,7 +543,7 @@ pub fn ps(root: &Path, opts: &Opts) -> Result<()> {
     let loaded = load(opts).ok();
     let order = loaded.as_ref().map(|l| l.order.clone()).unwrap_or_default();
     sort_by_service_order(&mut specs, &order, false);
-    println!("{:<16} {:<28} {:<22} {:<24} PORTS", "SERVICE", "CONTAINER", "STATUS", "IMAGE");
+    let mut rows = vec![["SERVICE".to_string(), "CONTAINER".into(), "STATUS".into(), "IMAGE".into(), "PORTS".into()]];
     for spec in &specs {
         let service = spec.labels.get(LABEL_SERVICE).map_or("-", String::as_str);
         let ports = loaded
@@ -500,7 +551,13 @@ pub fn ps(root: &Path, opts: &Opts) -> Result<()> {
             .and_then(|l| l.project.services.get(service))
             .map(|s| format_ports(&s.ports))
             .unwrap_or_default();
-        println!("{:<16} {:<28} {:<28} {:<24} {}", service, spec.id, store.status_text(&spec.id)?, spec.image, ports);
+        rows.push([service.to_string(), spec.id.clone(), store.status_text(&spec.id)?, spec.image.clone(), ports]);
+    }
+    // columns as wide as their longest cell, so long service names do not break the table
+    let widths: Vec<usize> = (0..4).map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap_or(0)).collect();
+    for row in &rows {
+        let line = format!("{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {}", row[0], row[1], row[2], row[3], row[4], w0 = widths[0], w1 = widths[1], w2 = widths[2], w3 = widths[3]);
+        println!("{}", line.trim_end());
     }
     Ok(())
 }
@@ -839,6 +896,9 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
     let loaded = load(opts)?;
     let store = ContainerStore::open(root)?;
     warn_unsupported(&loaded);
+    for note in skipped_notes(&loaded.skipped) {
+        eprintln!("note: {note}");
+    }
     check_secrets(&loaded)?;
     if !detach {
         interrupt::install();
@@ -984,7 +1044,7 @@ mod tests {
     fn loaded_from(dir: &Path, yaml: &str) -> Loaded {
         let file = dir.join("docker-compose.yml");
         std::fs::write(&file, yaml).unwrap();
-        load(&Opts { file, name: Some("demo".into()), profiles: vec![] }).unwrap()
+        load(&Opts { file, name: Some("demo".into()), profiles: vec![], env_files: vec![] }).unwrap()
     }
 
     #[cfg(target_os = "linux")]
@@ -1044,6 +1104,31 @@ mod tests {
     }
 
     #[test]
+    fn profiles_come_from_the_flags_first_then_from_compose_profiles_in_the_env_files() {
+        let env = |v: &str| BTreeMap::from([("COMPOSE_PROFILES".to_string(), v.to_string())]);
+        let none = BTreeMap::new();
+        let list = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(active_profiles(&list(&["a"]), false, &env("b")), ["a"], "an explicit profile replaces the file's");
+        assert_eq!(active_profiles(&[], false, &env("observability")), ["observability"]);
+        assert_eq!(active_profiles(&[], false, &env("a, b ,,c")), ["a", "b", "c"]);
+        assert!(active_profiles(&[], false, &env("")).is_empty(), "COMPOSE_PROFILES= in the file means none");
+        assert!(active_profiles(&[], false, &none).is_empty());
+        // set in the process environment (even empty): that wins over the files
+        assert!(active_profiles(&[], true, &env("x")).is_empty());
+        assert!(active_profiles(&list(&[""]), true, &env("x")).is_empty());
+        assert_eq!(active_profiles(&list(&["p"]), true, &env("x")), ["p"]);
+    }
+
+    #[test]
+    fn skipped_services_are_explained_with_the_flag_that_brings_them_back() {
+        let one = skipped_notes(&[("dash".into(), vec!["observability".into()])]);
+        assert_eq!(one, ["dash: not started, it belongs to profile observability (use --profile observability to include it)"]);
+        let two = skipped_notes(&[("x".into(), vec!["a".into(), "b".into()])]);
+        assert_eq!(two, ["x: not started, it belongs to profile a, b (use --profile a or --profile b to include it)"]);
+        assert!(skipped_notes(&[]).is_empty());
+    }
+
+    #[test]
     fn discovery_prefers_the_documented_order() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(discover_in(dir.path()), None);
@@ -1073,11 +1158,11 @@ mod tests {
 
     #[test]
     fn project_name_comes_from_the_option_or_the_directory() {
-        let opts = Opts { file: PathBuf::from("/work/My Shop/yarc.yaml"), name: None, profiles: vec![] };
+        let opts = Opts { file: PathBuf::from("/work/My Shop/yarc.yaml"), name: None, profiles: vec![], env_files: vec![] };
         assert_eq!(project_name(&opts).unwrap(), "my-shop");
-        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("custom".into()), profiles: vec![] };
+        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("custom".into()), profiles: vec![], env_files: vec![] };
         assert_eq!(project_name(&opts).unwrap(), "custom");
-        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("Bad Name".into()), profiles: vec![] };
+        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("Bad Name".into()), profiles: vec![], env_files: vec![] };
         assert!(project_name(&opts).is_err());
     }
 
@@ -1170,7 +1255,7 @@ mod tests {
         let p = project(
             "services:\n  a: { image: x, volumes: ['store:/s', './host:/h', 'cache:/c'] }\n  b: { image: x, volumes: ['store:/s2:ro'] }\n",
         );
-        let loaded = Loaded { name: "demo".into(), file: PathBuf::from("/w/yarc.yaml"), order: start_order(&p).unwrap(), project: p };
+        let loaded = Loaded { name: "demo".into(), file: PathBuf::from("/w/yarc.yaml"), order: start_order(&p).unwrap(), project: p, skipped: vec![] };
         let dirs = named_volume_dirs(Path::new("/root"), &loaded);
         assert_eq!(dirs, [Path::new("/root/volumes/demo_cache"), Path::new("/root/volumes/demo_store")]);
     }
@@ -1245,7 +1330,7 @@ mod tests {
     fn loading_checks_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("yarc.yaml");
-        let opts = Opts { file: file.clone(), name: Some("demo".into()), profiles: vec![] };
+        let opts = Opts { file: file.clone(), name: Some("demo".into()), profiles: vec![], env_files: vec![] };
         assert!(load(&opts).unwrap_err().to_string().contains("cannot read"));
 
         std::fs::write(&file, "services: {}\n").unwrap();

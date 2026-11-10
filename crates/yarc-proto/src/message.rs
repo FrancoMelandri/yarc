@@ -66,6 +66,9 @@ pub struct Globals {
     /// Active compose profiles (`--profile`, repeatable).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<String>,
+    /// Compose `--env-file` paths (in order; later files win).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_files: Vec<String>,
 }
 
 /// Everything `create` and `run` need.

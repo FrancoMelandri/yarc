@@ -15,6 +15,15 @@ pub struct Cli {
     #[arg(long, global = true, env = "YARC_FILE", value_name = "FILE", default_value = "yarc.yaml")]
     pub file: PathBuf,
 
+    /// Project file, before the subcommand only (like `docker compose -f`); same as `--file`
+    #[arg(short = 'f', value_name = "FILE")]
+    pub file_short: Option<PathBuf>,
+
+    /// Read variables for `${...}` from this file instead of the `.env` next to the project
+    /// file (repeatable, later files win; the process environment always wins)
+    #[arg(long = "env-file", global = true, value_name = "FILE")]
+    pub env_file: Vec<PathBuf>,
+
     /// Compose profile to activate (repeatable; also COMPOSE_PROFILES, comma separated; `*` is all)
     #[arg(long = "profile", global = true, env = "COMPOSE_PROFILES", value_delimiter = ',', value_name = "NAME")]
     pub profile: Vec<String>,
@@ -65,6 +74,13 @@ pub enum Command {
     Container(ContainerCommand),
     #[command(flatten)]
     Direct(ContainerCommand),
+}
+
+impl Cli {
+    /// `-f FILE` if given, else `--file` / `YARC_FILE` / the default.
+    pub fn project_file(&self) -> PathBuf {
+        self.file_short.clone().unwrap_or_else(|| self.file.clone())
+    }
 }
 
 #[derive(Debug, Args)]
@@ -564,6 +580,24 @@ mod tests {
         assert_eq!(parse(&["--profile", "a,b", "--profile", "c", "up"]).unwrap().profile, ["a", "b", "c"]);
         assert_eq!(parse(&["up", "--profile", "a", "--profile", "b"]).unwrap().profile, ["a", "b"]);
         assert!(parse(&["up"]).unwrap().profile.is_empty());
+
+        // -f is the project file before the subcommand, and still `logs -f` after it
+        let cli = parse(&["-f", "docker-compose.yml", "up", "-d"]).unwrap();
+        assert_eq!(cli.project_file(), std::path::Path::new("docker-compose.yml"));
+        assert_eq!(parse(&["up"]).unwrap().project_file(), std::path::Path::new("yarc.yaml"));
+        assert_eq!(parse(&["--file", "a.yml", "up"]).unwrap().project_file(), std::path::Path::new("a.yml"));
+        assert_eq!(parse(&["--file", "a.yml", "-f", "b.yml", "up"]).unwrap().project_file(), std::path::Path::new("b.yml"));
+        let Command::Project(ProjectCommand::Logs(a)) = parse(&["-f", "c.yml", "project", "logs", "-f"]).unwrap().command else { panic!() };
+        assert!(a.follow);
+        assert!(parse(&["-f", "a.yml", "-f", "b.yml", "up"]).is_err(), "several compose files are not supported");
+        assert!(parse(&["up", "-f", "a.yml"]).is_err(), "-f is not accepted after the subcommand");
+
+        // --env-file: repeatable, global
+        assert!(parse(&["up"]).unwrap().env_file.is_empty());
+        let cli = parse(&["--env-file", "a.env", "up", "--env-file", "b.env"]).unwrap();
+        assert_eq!(cli.env_file, [PathBuf::from("b.env")], "a global option given twice keeps the later position");
+        let cli = parse(&["--env-file", "a.env", "--env-file", "b.env", "up"]).unwrap();
+        assert_eq!(cli.env_file, [PathBuf::from("a.env"), PathBuf::from("b.env")]);
         assert!(matches!(parse(&["project", "ps"]).unwrap().command, Command::Project(ProjectCommand::Ps)));
         assert!(matches!(parse(&["project", "config"]).unwrap().command, Command::Project(ProjectCommand::Config)));
         let Command::Project(ProjectCommand::Stop(a)) = parse(&["project", "stop"]).unwrap().command else { panic!() };

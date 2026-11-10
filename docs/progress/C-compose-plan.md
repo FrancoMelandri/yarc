@@ -1,6 +1,6 @@
 # Compose support — plan
 
-Status: **in progress**. Decisions: the defaults. C1-C4 done (`C1-...` to `C4c-restart-config.md`; both real bundles load); next C5 (run the bundles end to end, `--env-file`, `-f`).
+Status: **done** (C1-C5: `docs/progress/C1-...` to `C5-end-to-end.md`). Both real bundles run from their shipped compose files; they need `x-yarc: { user: root }` on services whose image declares a non-root USER.
 
 Goal: `yarc -f docker-compose.yml up` works on a real bundle unchanged (the two bundles under `tmp/ssw-pms-fias-inspector` and `tmp/ssw-pms-fias-aero`), instead of a hand-written `yarc.yaml`.
 

@@ -148,9 +148,12 @@ fn profiles_select_services_by_flag_or_environment() {
     let plain = config(&[], &[]);
     assert!(plain.contains("demo-app-1") && !plain.contains("demo-dash-1"), "{plain}");
     assert!(plain.contains("stop grace period 20s") && plain.contains("secrets token"), "{plain}");
+    // what was left out is said, with the flag that brings it back
+    assert!(plain.contains("not included: dash: not started, it belongs to profile observability (use --profile observability"), "{plain}");
 
     let flagged = config(&["--profile", "observability"], &[]);
     assert!(flagged.contains("demo-dash-1") && flagged.contains("profiles observability"), "{flagged}");
+    assert!(!flagged.contains("not included"), "nothing is left out once the profile is active: {flagged}");
     assert!(config(&[], &[("COMPOSE_PROFILES", "observability")]).contains("demo-dash-1"));
     assert!(config(&["--profile", "*"], &[]).contains("demo-dash-1"));
 }
@@ -189,4 +192,87 @@ fn restart_works_in_yarc_yaml_too() {
     let out = run(dir.path(), &["-p", "demo", "project", "config"], &[]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(text(&out.stdout).contains("restart always"));
+}
+
+fn config_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut full = vec!["-p", "demo"];
+    full.extend_from_slice(args);
+    full.extend_from_slice(&["project", "config"]);
+    run(dir, &full, envs)
+}
+
+#[test]
+fn env_files_replace_the_default_dot_env_and_later_ones_win() {
+    let dir = project("compose.yaml", COMPOSE, Some("TOKEN=from-dot-env\nDB_PORT=1111\n"));
+    std::fs::write(dir.path().join("a.env"), "TOKEN=a\nDB_PORT=2222\n").unwrap();
+    std::fs::write(dir.path().join("b.env"), "DB_PORT=3333\n").unwrap();
+
+    let out = config_with(dir.path(), &["--env-file", "a.env"], &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("2222->5432"), "{}", text(&out.stdout));
+
+    // two files: the later one wins for what both define; TOKEN still comes from the first
+    let out = config_with(dir.path(), &["--env-file", "a.env", "--env-file", "b.env"], &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("3333->5432"));
+
+    // .env is not read at all when --env-file is given: TOKEN is required and only .env has it
+    let out = config_with(dir.path(), &["--env-file", "b.env"], &[]);
+    assert!(!out.status.success());
+    assert!(text(&out.stderr).contains("set TOKEN in .env"), "{}", text(&out.stderr));
+
+    // the process environment still wins over any file
+    let out = config_with(dir.path(), &["--env-file", "a.env"], &[("DB_PORT", "4444")]);
+    assert!(text(&out.stdout).contains("4444->5432"));
+}
+
+#[test]
+fn a_missing_or_broken_env_file_is_reported_without_contents() {
+    let dir = project("compose.yaml", COMPOSE, Some("TOKEN=x\n"));
+    let out = config_with(dir.path(), &["--env-file", "nope.env"], &[]);
+    assert!(!out.status.success());
+    assert!(text(&out.stderr).contains("cannot read env file") && text(&out.stderr).contains("nope.env"), "{}", text(&out.stderr));
+
+    std::fs::write(dir.path().join("bad.env"), "TOKEN=hunter2\nnot a pair\n").unwrap();
+    let out = config_with(dir.path(), &["--env-file", "bad.env"], &[]);
+    assert!(!out.status.success());
+    let err = text(&out.stderr);
+    assert!(err.contains("bad.env") && err.contains("line 2") && !err.contains("hunter2"), "{err}");
+}
+
+#[test]
+fn dash_f_names_the_project_file_before_the_subcommand() {
+    let dir = project("stack.yml", COMPOSE, None);
+    let out = run(dir.path(), &["-f", "stack.yml", "-p", "demo", "project", "config"], &[("TOKEN", "x")]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("stack.yml"));
+    // `project logs -f` is still follow, not a project file
+    // (nothing was started, so the command itself says so: it parsed, and ran)
+    let out = run(dir.path(), &["-f", "stack.yml", "-p", "demo", "project", "logs", "-f"], &[("TOKEN", "x")]);
+    assert!(text(&out.stderr).contains("has no containers"), "{}", text(&out.stderr));
+    assert!(!text(&out.stderr).contains("unexpected argument"), "{}", text(&out.stderr));
+}
+
+#[test]
+fn compose_profiles_in_the_env_file_activate_profiles_like_docker_compose() {
+    let dir = project("compose.yaml", PROFILED, Some("COMPOSE_PROFILES=observability\n"));
+    let config = |args: &[&str], envs: &[(&str, &str)]| {
+        let mut full = vec!["-p", "demo"];
+        full.extend_from_slice(args);
+        full.extend_from_slice(&["project", "config"]);
+        let out = run(dir.path(), &full, envs);
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        text(&out.stdout)
+    };
+    // the bundles' installer writes this line; no flag needed
+    assert!(config(&[], &[]).contains("demo-dash-1"));
+    // an explicit --profile replaces it
+    let other = config(&["--profile", "debug"], &[]);
+    assert!(!other.contains("demo-dash-1") && other.contains("not included: dash"), "{other}");
+    // the process environment replaces it too, and an empty value means no profile
+    assert!(!config(&[], &[("COMPOSE_PROFILES", "")]).contains("demo-dash-1"));
+    assert!(config(&[], &[("COMPOSE_PROFILES", "observability")]).contains("demo-dash-1"));
+    // an --env-file is read for it as well
+    std::fs::write(dir.path().join("off.env"), "COMPOSE_PROFILES=\n").unwrap();
+    assert!(!config(&["--env-file", "off.env"], &[]).contains("demo-dash-1"));
 }

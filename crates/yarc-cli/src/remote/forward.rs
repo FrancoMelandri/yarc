@@ -61,9 +61,10 @@ pub fn plan(cli: &Cli, paths: &Paths) -> Result<Option<Forward>> {
     let globals = Globals {
         root: cli.root.as_deref().map(|r| paths.linux(r)).transpose()?,
         // discovery (compose.yaml, ...) must look at the Windows directory, not the translated path
-        file: if needs_project { Some(paths.linux(&crate::project::resolve_file(&cli.file))?) } else { None },
+        file: if needs_project { Some(paths.linux(&crate::project::resolve_file(&cli.project_file()))?) } else { None },
         project: cli.project.clone(),
         profiles: if needs_project { cli.profile.clone() } else { Vec::new() },
+        env_files: if needs_project { cli.env_file.iter().map(|p| paths.linux(p)).collect::<Result<Vec<_>>>()? } else { Vec::new() },
     };
     Ok(Some(Forward { globals, command }))
 }
@@ -122,6 +123,16 @@ mod tests {
                 Ok(if absolute { s.into_owned() } else { format!(r"C:\cwd\{s}") })
             },
         }
+    }
+
+    #[test]
+    fn project_file_options_are_translated_for_the_linux_side() {
+        let f = plan_of(&["-f", r"C:\work\app\docker-compose.yml", "--env-file", r"C:\work\app\prod.env", "--env-file", "rel.env", "up", "-d"]).unwrap();
+        assert_eq!(f.globals.file.as_deref(), Some("/mnt/c/work/app/docker-compose.yml"));
+        assert_eq!(f.globals.env_files, ["/mnt/c/work/app/prod.env", "/mnt/c/cwd/rel.env"]);
+        // commands that do not read a project file send neither
+        let f = plan_of(&["--env-file", "x.env", "image", "ls"]).unwrap();
+        assert!(f.globals.env_files.is_empty());
     }
 
     #[test]

@@ -92,6 +92,9 @@ pub fn to_args(globals: &Globals, command: &Command) -> Result<Vec<String>, ArgE
     for profile in &globals.profiles {
         out.push(format!("--profile={profile}"));
     }
+    for env_file in &globals.env_files {
+        out.push(format!("--env-file={env_file}"));
+    }
     if let Some(project) = &globals.project {
         out.push(format!("--project={project}"));
     }
@@ -194,10 +197,10 @@ mod tests {
 
     #[test]
     fn globals_come_first() {
-        let g = Globals { root: Some("/r".into()), file: Some("/p/y.yaml".into()), project: Some("demo".into()), profiles: vec!["obs".into(), "dbg".into()] };
+        let g = Globals { root: Some("/r".into()), file: Some("/p/y.yaml".into()), project: Some("demo".into()), profiles: vec!["obs".into(), "dbg".into()], env_files: vec!["/p/.env.prod".into()] };
         assert_eq!(
             to_args(&g, &Command::Up { detach: true }).unwrap(),
-            ["--root=/r", "--file=/p/y.yaml", "--profile=obs", "--profile=dbg", "--project=demo", "up", "--detach"]
+            ["--root=/r", "--file=/p/y.yaml", "--profile=obs", "--profile=dbg", "--env-file=/p/.env.prod", "--project=demo", "up", "--detach"]
         );
         assert_eq!(to_args(&Globals::default(), &Command::ProjectConfig).unwrap(), ["project", "config"]);
     }

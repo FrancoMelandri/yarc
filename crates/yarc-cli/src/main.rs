@@ -42,11 +42,12 @@ fn run() -> Result<u8> {
     if let Some(code) = remote_or_doctor(&cli)? {
         return Ok(code);
     }
+    let file = cli.project_file();
     let root = match cli.root {
         Some(r) => r,
         None => root::default_root()?,
     };
-    let opts = project::Opts { file: cli.file, name: cli.project, profiles: cli.profile };
+    let opts = project::Opts { file, name: cli.project, profiles: cli.profile, env_files: cli.env_file };
     match cli.command {
         Command::Run(args) => commands::run(&root, args),
         Command::Pull(args) => commands::pull(&root, args).map(|()| 0),

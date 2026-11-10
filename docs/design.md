@@ -4,12 +4,12 @@
 - Run OCI images as multi-service projects, like docker compose, **without Docker**.
 - Learning-first: own the runtime (namespaces, cgroups, overlayfs), image pull and networking.
 - Platforms: Linux (native), Windows (WSL2), macOS (best-effort, Virtualization.framework).
-- Simple, opinionated `yarc.yaml` (not compose-spec compatible).
+- A simple native `yarc.yaml`, and **a practical subset of Docker Compose files read directly** (see "Compose files" below).
 - Language: Rust.
 
 ## Non-goals (v1)
 - `build:` / Dockerfile / BuildKit.
-- Compose-spec compatibility.
+- Full compose-spec compatibility: unsupported keys (`build`, `networks`, `deploy`, ...) are errors, never silently ignored.
 - Rootless mode (planned later).
 - Swarm/Kubernetes-like orchestration.
 
@@ -124,3 +124,12 @@ Windows host; everything up to M4 is developed and tested inside WSL2 (Ubuntu-24
 - Control protocol between CLI and agent/shims: JSON over unix socket vs gRPC.
 - Volume model: named volumes as plain dirs vs loopback images.
 - Log format and rotation.
+
+## Compose files
+`yarc up` reads a Docker Compose file as is (`compose.yaml`, `docker-compose.yml`, ... are found in the current directory when there is no `yarc.yaml`; `-f FILE` / `--file FILE` names one; any file not called `yarc.*` is read as compose). Details and decisions: `docs/progress/C-compose-plan.md`.
+
+- **Supported:** `image`, `command`, `entrypoint`, `environment`, `ports` (published on 127.0.0.1), `volumes` (short form), top-level `volumes`, `depends_on` (list or with `service_started` / `service_healthy`), `user`, `working_dir`, `healthcheck`, `container_name` (an extra name on the project network), file `secrets` (read-only at `/run/secrets/<name>`), `profiles`, `stop_grace_period`, `restart`.
+- **Variables:** `${VAR}`, `${VAR:-d}`, `${VAR:?msg}` and the other forms; values from the process environment, then the `.env` next to the file, or the `--env-file`s instead of it (repeatable, later wins).
+- **Profiles:** `--profile NAME` (repeatable) or `COMPOSE_PROFILES`.
+- **`x-yarc:`** per service holds yarc-only settings; today `user: root`, needed for images that declare a non-root `USER` because the rootless runtime only maps uid 0. Docker ignores the block.
+- **Restart policies** (`no`, `always`, `unless-stopped`, `on-failure[:N]`) are carried out by the container's shim; `stop`, `down`, `rm -f` and `kill` are never undone. `always` and `unless-stopped` behave the same because there is no boot-time supervisor.

@@ -11,6 +11,17 @@ pub struct Project {
 }
 
 impl Project {
+    /// The services `with_profiles(active)` would drop, with the profiles that would
+    /// bring them back: lets a command say what it left out instead of staying silent.
+    pub fn inactive_services(&self, active: &[String]) -> Vec<(String, Vec<String>)> {
+        let all = active.iter().any(|p| p == "*");
+        self.services
+            .iter()
+            .filter(|(_, s)| !s.profiles.is_empty() && !all && !s.profiles.iter().any(|p| active.contains(p)))
+            .map(|(n, s)| (n.clone(), s.profiles.clone()))
+            .collect()
+    }
+
     /// Keeps the services that have no profile or one of the `active` profiles (`"*"`
     /// activates all). A service that needs a removed one is an error, so a dependency
     /// is never silently missing.

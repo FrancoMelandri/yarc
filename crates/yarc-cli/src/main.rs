@@ -62,7 +62,9 @@ fn run() -> Result<u8> {
         Command::Agent(_) => agent().map(|()| 0),
         Command::Doctor => Ok(0), // handled before the store is touched
         Command::Up(args) => project::up(&root, &opts, args.detach),
-        Command::Down(args) => project::down(&root, &opts, args.time.map(Duration::from_secs), args.volumes).map(|()| 0),
+        Command::Down(args) => {
+            project::down(&root, &opts, args.time.map(Duration::from_secs), args.volumes).map(|()| 0)
+        }
         Command::Project(cmd) => match cmd {
             ProjectCommand::Ps => project::ps(&root, &opts).map(|()| 0),
             ProjectCommand::Logs(args) => project::logs(&root, &opts, args).map(|()| 0),

@@ -8,7 +8,9 @@ pub enum RuntimeError {
     InvalidEnv(String),
     #[error("working directory '{0}' must be an absolute path")]
     RelativeWorkDir(String),
-    #[error("invalid container name '{0}': use letters, digits, '_', '.', '-' (max 64, starting with a letter or digit)")]
+    #[error(
+        "invalid container name '{0}': use letters, digits, '_', '.', '-' (max 64, starting with a letter or digit)"
+    )]
     InvalidName(String),
     #[error("a container named '{0}' already exists")]
     AlreadyExists(String),

@@ -89,11 +89,8 @@ fn project_commands_use_the_requested_file_and_name() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("yarc.yaml");
     std::fs::write(&file, "services:\n  web:\n    image: alpine:3.20\n    cmd: [sleep, '1']\n").unwrap();
-    let globals = Globals {
-        file: Some(file.display().to_string()),
-        project: Some("agentdemo".into()),
-        ..Default::default()
-    };
+    let globals =
+        Globals { file: Some(file.display().to_string()), project: Some("agentdemo".into()), ..Default::default() };
     let mut a = agent();
     let (out, err, code) = a.run(1, globals, Command::ProjectConfig);
     assert_eq!((code, err.as_str()), (0, ""));

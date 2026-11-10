@@ -20,9 +20,9 @@ mod lifecycle;
 #[cfg(target_os = "linux")]
 mod linux;
 mod logs;
-mod network;
 #[cfg(target_os = "linux")]
 mod netns;
+mod network;
 #[cfg(target_os = "linux")]
 mod paths;
 mod plan;
@@ -38,18 +38,23 @@ use std::os::fd::OwnedFd;
 pub use container::ContainerStore;
 pub use error::{Result, RuntimeError};
 #[cfg(target_os = "linux")]
-pub use lifecycle::{exec_container, remove_container, run_recorded, run_recorded_with, signal_container, stop_container, supervise, Launch};
+pub use lifecycle::{
+    exec_container, remove_container, run_recorded, run_recorded_with, signal_container, stop_container, supervise,
+    Launch,
+};
 #[cfg(target_os = "linux")]
 pub use linux::{process_alive, start, Running};
 pub use logs::{format_timestamp, read_log, read_log_from, LogEntry, LogWriter, Stream};
-pub use network::{host_search_domains, NetInfo, PortMap, ProjectNet};
 #[cfg(target_os = "linux")]
 pub use netns::{run_holder, stop_holder};
+pub use network::{host_search_domains, NetInfo, PortMap, ProjectNet};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
-pub use spec::{resolve_process, ContainerSpec, HealthSpec, ImageDefaults, Network, Overrides, Process, VolumeSpec, DEFAULT_PATH};
 pub use restart::{Backoff, Decision, RestartTracker, RunEnd};
-pub use yarc_config::{ParsePolicyError, RestartPolicy};
+pub use spec::{
+    resolve_process, ContainerSpec, HealthSpec, ImageDefaults, Network, Overrides, Process, VolumeSpec, DEFAULT_PATH,
+};
 pub use state::{describe, describe_at, now_ms, ContainerState, Health, HealthStatus, Status};
+pub use yarc_config::{ParsePolicyError, RestartPolicy};
 
 /// How to start a container. The descriptors become the container's stdin,
 /// stdout and stderr (`None`: inherit yarc's); [`start`] closes yarc's copies.

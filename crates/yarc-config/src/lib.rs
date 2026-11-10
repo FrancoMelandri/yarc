@@ -53,8 +53,7 @@ pub enum ConfigError {
 
 /// Parse and validate a `yarc.yaml` document.
 pub fn parse(input: &str) -> Result<Project, ConfigError> {
-    let raw: model::RawProject =
-        serde_yaml_ng::from_str(input).map_err(|e| ConfigError::Yaml(e.to_string()))?;
+    let raw: model::RawProject = serde_yaml_ng::from_str(input).map_err(|e| ConfigError::Yaml(e.to_string()))?;
     let project = raw.into_project()?;
     validate::validate(&project)?;
     Ok(project)

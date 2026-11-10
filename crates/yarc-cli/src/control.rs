@@ -93,11 +93,7 @@ mod imp {
         }
         let upper = s.to_ascii_uppercase();
         let name = upper.strip_prefix("SIG").unwrap_or(&upper);
-        NAMES
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, num)| *num)
-            .ok_or_else(|| anyhow!("unknown signal '{s}'"))
+        NAMES.iter().find(|(n, _)| *n == name).map(|(_, num)| *num).ok_or_else(|| anyhow!("unknown signal '{s}'"))
     }
 
     #[cfg(test)]

@@ -3,13 +3,10 @@
 use std::process::{Command, Output};
 
 fn yarc(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_yarc"))
-        .args(args)
-        .env_remove("YARC_ROOT")
-        .output()
-        .expect("failed to run yarc")
+    Command::new(env!("CARGO_BIN_EXE_yarc")).args(args).env_remove("YARC_ROOT").output().expect("failed to run yarc")
 }
 
+#[cfg(unix)]
 fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
@@ -22,6 +19,7 @@ fn help_lists_commands() {
     assert!(text.contains("pull") && text.contains("image"), "{text}");
 }
 
+#[cfg(unix)]
 #[test]
 fn invalid_reference_is_reported() {
     let root = tempfile::tempdir().unwrap();
@@ -30,6 +28,7 @@ fn invalid_reference_is_reported() {
     assert!(stderr(&out).contains("invalid image reference"), "{}", stderr(&out));
 }
 
+#[cfg(unix)]
 #[test]
 fn invalid_platform_is_reported() {
     let root = tempfile::tempdir().unwrap();
@@ -49,6 +48,7 @@ fn unpacking_an_unpulled_image_explains_what_to_do() {
     assert!(!dest.exists(), "nothing is created for a missing image");
 }
 
+#[cfg(unix)]
 #[test]
 fn container_ls_on_an_empty_root_prints_only_the_header() {
     let root = tempfile::tempdir().unwrap();

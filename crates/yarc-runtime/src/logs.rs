@@ -70,7 +70,11 @@ impl<W: Write> LogWriter<W> {
             };
             encode(&mut batch, stream, &line, ts);
         }
-        if batch.is_empty() { Ok(()) } else { self.out.write_all(&batch) }
+        if batch.is_empty() {
+            Ok(())
+        } else {
+            self.out.write_all(&batch)
+        }
     }
 
     /// Writes what is left of unterminated lines (call at end of output).
@@ -82,7 +86,11 @@ impl<W: Write> LogWriter<W> {
                 encode(&mut batch, stream, &rest, ts);
             }
         }
-        if batch.is_empty() { Ok(()) } else { self.out.write_all(&batch) }
+        if batch.is_empty() {
+            Ok(())
+        } else {
+            self.out.write_all(&batch)
+        }
     }
 }
 
@@ -134,13 +142,7 @@ pub fn format_timestamp(ms: u64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60,
-        ms % 1000
-    )
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z", rem / 3600, rem % 3600 / 60, rem % 60, ms % 1000)
 }
 
 #[cfg(test)]
@@ -150,11 +152,7 @@ mod tests {
     fn written(f: impl FnOnce(&mut LogWriter<Vec<u8>>)) -> Vec<LogEntry> {
         let mut w = LogWriter::new(Vec::new());
         f(&mut w);
-        w.out
-            .split(|&b| b == b'\n')
-            .filter(|l| !l.is_empty())
-            .map(|l| serde_json::from_slice(l).unwrap())
-            .collect()
+        w.out.split(|&b| b == b'\n').filter(|l| !l.is_empty()).map(|l| serde_json::from_slice(l).unwrap()).collect()
     }
 
     fn e(ts: u64, stream: Stream, line: &str) -> LogEntry {

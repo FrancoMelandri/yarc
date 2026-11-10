@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 use std::{fs, io, thread};
 
 use nix::errno::Errno;
-use nix::sched::{unshare, CloneFlags};
 use nix::libc;
+use nix::sched::{unshare, CloneFlags};
 use nix::sys::signal::{kill, sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{fork, getegid, geteuid, pipe, ForkResult, Pid};
@@ -31,6 +31,9 @@ use nix::unistd::{fork, getegid, geteuid, pipe, ForkResult, Pid};
 use crate::error::{Result, RuntimeError};
 use crate::linux::loopback_up;
 use crate::network::{NetInfo, PortMap, ProjectNet, DNS_FORWARD_ADDR};
+
+/// Told once whether the network came up (`Err`: why not).
+type Ready<'a> = Box<dyn FnOnce(std::result::Result<(), String>) + 'a>;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -47,13 +50,13 @@ pub fn run_holder(
     pasta: Option<&Path>,
     ready: impl FnOnce(std::result::Result<(), String>),
 ) -> Result<()> {
-    let fail = |ready: &mut Option<Box<dyn FnOnce(std::result::Result<(), String>) + '_>>, msg: String| -> RuntimeError {
+    let fail = |ready: &mut Option<Ready<'_>>, msg: String| -> RuntimeError {
         if let Some(r) = ready.take() {
             r(Err(msg.clone()));
         }
         RuntimeError::start(msg)
     };
-    let mut ready: Option<Box<dyn FnOnce(std::result::Result<(), String>) + '_>> = Some(Box::new(ready));
+    let mut ready: Option<Ready<'_>> = Some(Box::new(ready));
 
     // Before anything else, while this process is still in the host's namespaces
     // and single-threaded: pasta must start from the host side. Not having it
@@ -137,12 +140,10 @@ pub fn run_holder(
 }
 
 fn accept_loop(listener: TcpListener, map: PortMap) {
-    for conn in listener.incoming() {
-        if let Ok(client) = conn {
-            thread::spawn(move || {
-                let _ = relay(client, map.container);
-            });
-        }
+    for client in listener.incoming().flatten() {
+        thread::spawn(move || {
+            let _ = relay(client, map.container);
+        });
     }
 }
 
@@ -172,7 +173,12 @@ pub fn stop_holder(net: &ProjectNet, timeout: Duration) -> Result<()> {
         if Instant::now() >= deadline {
             match kill(target, Signal::SIGKILL) {
                 Ok(()) | Err(Errno::ESRCH) => {}
-                Err(e) => return Err(RuntimeError::Io { context: "cannot kill the project network holder".into(), source: e.into() }),
+                Err(e) => {
+                    return Err(RuntimeError::Io {
+                        context: "cannot kill the project network holder".into(),
+                        source: e.into(),
+                    })
+                }
             }
             thread::sleep(Duration::from_millis(200));
             return if net.is_alive()? {
@@ -272,7 +278,10 @@ impl Pasta {
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(format!("pasta did not configure a network interface within {}s", PASTA_SETUP_TIMEOUT.as_secs()));
+                return Err(format!(
+                    "pasta did not configure a network interface within {}s",
+                    PASTA_SETUP_TIMEOUT.as_secs()
+                ));
             }
             thread::sleep(Duration::from_millis(20));
         }

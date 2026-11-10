@@ -28,12 +28,8 @@ impl Project {
     pub fn with_profiles(mut self, active: &[String]) -> Result<Project, ConfigError> {
         let all = active.iter().any(|p| p == "*");
         let enabled = |s: &Service| s.profiles.is_empty() || all || s.profiles.iter().any(|p| active.contains(p));
-        let removed: BTreeMap<String, Vec<String>> = self
-            .services
-            .iter()
-            .filter(|(_, s)| !enabled(s))
-            .map(|(n, s)| (n.clone(), s.profiles.clone()))
-            .collect();
+        let removed: BTreeMap<String, Vec<String>> =
+            self.services.iter().filter(|(_, s)| !enabled(s)).map(|(n, s)| (n.clone(), s.profiles.clone())).collect();
         self.services.retain(|n, _| !removed.contains_key(n));
         for (name, svc) in &self.services {
             if let Some(target) = svc.needs.keys().find(|t| removed.contains_key(*t)) {
@@ -195,24 +191,14 @@ impl RawService {
         if user.as_deref() == Some("") {
             return Err(ConfigError::EmptyUser(name.into()));
         }
-        let ports = self
-            .ports
-            .iter()
-            .map(|p| parse_port(name, p))
-            .collect::<Result<_, _>>()?;
-        let volumes = self
-            .volumes
-            .iter()
-            .map(|v| parse_volume(name, v))
-            .collect::<Result<_, _>>()?;
+        let ports = self.ports.iter().map(|p| parse_port(name, p)).collect::<Result<_, _>>()?;
+        let volumes = self.volumes.iter().map(|v| parse_volume(name, v)).collect::<Result<_, _>>()?;
         let health = self
             .health
             .map(|h| -> Result<Health, ConfigError> {
                 let interval = match h.interval {
-                    Some(s) => parse_duration(&s).ok_or_else(|| ConfigError::InvalidDuration {
-                        service: name.into(),
-                        value: s,
-                    })?,
+                    Some(s) => parse_duration(&s)
+                        .ok_or_else(|| ConfigError::InvalidDuration { service: name.into(), value: s })?,
                     None => DEFAULT_HEALTH_INTERVAL,
                 };
                 Ok(Health { cmd: h.cmd, interval })
@@ -246,20 +232,15 @@ impl RawService {
 }
 
 pub(crate) fn parse_port(service: &str, value: &str) -> Result<PortMapping, ConfigError> {
-    let err = |reason: &str| ConfigError::InvalidPort {
-        service: service.into(),
-        value: value.into(),
-        reason: reason.into(),
-    };
+    let err =
+        |reason: &str| ConfigError::InvalidPort { service: service.into(), value: value.into(), reason: reason.into() };
     let (ports, protocol) = match value.split_once('/') {
         None => (value, Protocol::Tcp),
         Some((p, "tcp")) => (p, Protocol::Tcp),
         Some((p, "udp")) => (p, Protocol::Udp),
         Some(_) => return Err(err("protocol must be tcp or udp")),
     };
-    let (host, container) = ports
-        .split_once(':')
-        .ok_or_else(|| err("expected HOST:CONTAINER"))?;
+    let (host, container) = ports.split_once(':').ok_or_else(|| err("expected HOST:CONTAINER"))?;
     let num = |s: &str| match s.parse::<u16>() {
         Ok(0) | Err(_) => Err(err("port must be 1-65535")),
         Ok(n) => Ok(n),

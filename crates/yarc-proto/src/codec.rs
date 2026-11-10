@@ -18,7 +18,10 @@ pub enum ProtoError {
     /// The line is not a valid frame.
     Malformed(String),
     TooLarge,
-    VersionMismatch { ours: u32, theirs: u32 },
+    VersionMismatch {
+        ours: u32,
+        theirs: u32,
+    },
 }
 
 impl fmt::Display for ProtoError {

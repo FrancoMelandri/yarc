@@ -107,7 +107,10 @@ mod tests {
         assert!(!t.due(99_999), "no overlapping checks");
         assert!(t.finished(11_300, Some(0)));
         let h = t.health();
-        assert_eq!((h.status, h.failing_streak, h.last_exit, h.last_check_ms), (HealthStatus::Healthy, 0, Some(0), Some(11_300)));
+        assert_eq!(
+            (h.status, h.failing_streak, h.last_exit, h.last_check_ms),
+            (HealthStatus::Healthy, 0, Some(0), Some(11_300))
+        );
         assert!(!t.due(16_299));
         assert!(t.due(16_300));
     }
@@ -120,7 +123,10 @@ mod tests {
         assert!(t.finished(2, Some(1)), "streak 2");
         assert_eq!(t.health().status, HealthStatus::Starting);
         assert!(t.finished(3, Some(2)), "streak 3 → unhealthy");
-        assert_eq!((t.health().status, t.health().failing_streak, t.health().last_exit), (HealthStatus::Unhealthy, 3, Some(2)));
+        assert_eq!(
+            (t.health().status, t.health().failing_streak, t.health().last_exit),
+            (HealthStatus::Unhealthy, 3, Some(2))
+        );
         assert!(t.finished(4, Some(1)), "the streak keeps growing");
         assert_eq!(t.health().status, HealthStatus::Unhealthy);
         assert!(t.finished(5, Some(0)));

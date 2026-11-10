@@ -136,7 +136,13 @@ pub fn load_dir(store: &BlobStore, dir: &Path) -> Result<LoadReport> {
     Ok(report)
 }
 
-fn add_blob(store: &BlobStore, digest: &Digest, reader: &mut impl Read, size: u64, report: &mut LoadReport) -> Result<()> {
+fn add_blob(
+    store: &BlobStore,
+    digest: &Digest,
+    reader: &mut impl Read,
+    size: u64,
+    report: &mut LoadReport,
+) -> Result<()> {
     if store.contains(digest) {
         report.blobs_present += 1;
         return Ok(());
@@ -151,10 +157,7 @@ fn add_blob(store: &BlobStore, digest: &Digest, reader: &mut impl Read, size: u6
 fn read_small(reader: &mut impl Read, what: &str) -> Result<Vec<u8>> {
     const LIMIT: u64 = 16 * 1024 * 1024;
     let mut buf = Vec::new();
-    reader
-        .take(LIMIT + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| OciError::BadLayer(format!("cannot read {what}: {e}")))?;
+    reader.take(LIMIT + 1).read_to_end(&mut buf).map_err(|e| OciError::BadLayer(format!("cannot read {what}: {e}")))?;
     if buf.len() as u64 > LIMIT {
         return Err(OciError::TooLarge(what.into(), LIMIT));
     }
@@ -163,15 +166,17 @@ fn read_small(reader: &mut impl Read, what: &str) -> Result<Vec<u8>> {
 
 /// Check every named image is complete, then publish the names.
 fn finish(store: &BlobStore, index: &[u8], report: &mut LoadReport) -> Result<()> {
-    let index: Index = serde_json::from_slice(index)
-        .map_err(|e| OciError::Json { what: "index.json".into(), msg: e.to_string() })?;
+    let index: Index =
+        serde_json::from_slice(index).map_err(|e| OciError::Json { what: "index.json".into(), msg: e.to_string() })?;
 
     // Verify everything first so a broken layout publishes no names at all.
     let mut named = Vec::new();
     for entry in &index.manifests {
         let digest = Digest::parse(&entry.digest)?;
         if !store.contains(&digest) {
-            return Err(OciError::BadLayer(format!("manifest {digest} is listed in index.json but missing from blobs/")));
+            return Err(OciError::BadLayer(format!(
+                "manifest {digest} is listed in index.json but missing from blobs/"
+            )));
         }
         let image = match parse_manifest(&store.read_blob(&digest)?)? {
             Manifest::Image(m) => m,
@@ -200,9 +205,9 @@ fn finish(store: &BlobStore, index: &[u8], report: &mut LoadReport) -> Result<()
 }
 
 fn image_name(annotations: &std::collections::BTreeMap<String, String>) -> Option<Reference> {
-    let full = annotations.get(NAME_ANNOTATION).or_else(|| {
-        annotations.get(REF_NAME_ANNOTATION).filter(|n| n.contains('/'))
-    })?;
+    let full = annotations
+        .get(NAME_ANNOTATION)
+        .or_else(|| annotations.get(REF_NAME_ANNOTATION).filter(|n| n.contains('/')))?;
     full.parse().ok()
 }
 
@@ -219,7 +224,8 @@ mod tests {
     /// One image (config + one layer) named `name`, or unnamed when `None`.
     fn layout(name: Option<&str>) -> Layout {
         let layer = b"layer-bytes".to_vec();
-        let config = br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":[]}}"#.to_vec();
+        let config =
+            br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":[]}}"#.to_vec();
         let (ld, cd) = (Digest::of(&layer), Digest::of(&config));
         let manifest = format!(
             r#"{{"schemaVersion":2,"config":{{"mediaType":"c","digest":"{cd}","size":{}}},"layers":[{{"mediaType":"l","digest":"{ld}","size":{}}}]}}"#,
@@ -365,11 +371,13 @@ mod tests {
         let l = layout(Some("app:1.0"));
         // Odd names are simply ignored; only the fixed layout names are acted on.
         let tar = tar_of(&l, None, &[("../../evil", b"x"), ("blobs/sha256/../../evil2", b"x")]);
-        load_archive(&s, &tar[..]).map(|_| ()).or_else(|e| match e {
-            OciError::InvalidDigest(_) => Ok(()),
-            e => Err(e),
-        })
-        .unwrap();
+        load_archive(&s, &tar[..])
+            .map(|_| ())
+            .or_else(|e| match e {
+                OciError::InvalidDigest(_) => Ok(()),
+                e => Err(e),
+            })
+            .unwrap();
         assert!(!d.path().parent().unwrap().join("evil").exists());
         assert!(!d.path().join("evil2").exists());
     }

@@ -73,7 +73,10 @@ pub fn serve<R: BufRead, W: Write + Send>(mut input: R, output: W, exe: &Path) -
             return Err(e);
         }
     }
-    out.send(&AgentFrame::Hello { version: PROTOCOL_VERSION, agent: format!("yarc-agent {}", env!("CARGO_PKG_VERSION")) });
+    out.send(&AgentFrame::Hello {
+        version: PROTOCOL_VERSION,
+        agent: format!("yarc-agent {}", env!("CARGO_PKG_VERSION")),
+    });
 
     let running: Running = Mutex::new(HashMap::new());
     thread::scope(|scope| {
@@ -103,7 +106,13 @@ pub fn serve<R: BufRead, W: Write + Send>(mut input: R, output: W, exe: &Path) -
                     match start(exe, &globals, &command) {
                         Ok(child) if lock(&running).contains_key(&id) => {
                             kill_now(child);
-                            out.event(id, Event::Failed { message: format!("request {id} is already running"), code: START_FAILED });
+                            out.event(
+                                id,
+                                Event::Failed {
+                                    message: format!("request {id} is already running"),
+                                    code: START_FAILED,
+                                },
+                            );
                         }
                         Ok(child) => {
                             lock(&running).insert(id, child.id());

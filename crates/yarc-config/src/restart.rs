@@ -20,7 +20,9 @@ pub enum RestartPolicy {
     Always,
     UnlessStopped,
     /// Restart after a non-zero exit, at most `max` times (`None`: no limit).
-    OnFailure { max: Option<u32> },
+    OnFailure {
+        max: Option<u32>,
+    },
 }
 
 impl RestartPolicy {

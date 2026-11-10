@@ -18,7 +18,9 @@ use serde_yaml_ng::Value;
 
 use crate::interpolate::interpolate;
 use crate::model::{parse_duration, parse_port, parse_volume, DEFAULT_HEALTH_INTERVAL};
-use crate::{validate, Condition, ConfigError, Health, PortMapping, Project, RestartPolicy, SecretMount, Service, VolumeSource};
+use crate::{
+    validate, Condition, ConfigError, Health, PortMapping, Project, RestartPolicy, SecretMount, Service, VolumeSource,
+};
 
 #[derive(Debug, Deserialize)]
 struct RawCompose {
@@ -123,12 +125,18 @@ where
     let mut secret_files = BTreeMap::new();
     for (name, secret) in raw.secrets.unwrap_or_default() {
         if !valid_name(&name) {
-            return Err(field_err("", &format!("secrets.{name}"), "names may only contain letters, digits, '_', '.' and '-'"));
+            return Err(field_err(
+                "",
+                &format!("secrets.{name}"),
+                "names may only contain letters, digits, '_', '.' and '-'",
+            ));
         }
         if let Some(key) = secret.extra.keys().next() {
             return Err(ConfigError::UnsupportedKey { scope: format!("secret '{name}'"), key: key.clone() });
         }
-        let file = secret.file.ok_or_else(|| field_err("", &format!("secrets.{name}"), "only file secrets are supported (file: PATH)"))?;
+        let file = secret
+            .file
+            .ok_or_else(|| field_err("", &format!("secrets.{name}"), "only file secrets are supported (file: PATH)"))?;
         if file.trim().is_empty() {
             return Err(field_err("", &format!("secrets.{name}.file"), "must not be empty"));
         }
@@ -150,10 +158,8 @@ where
 {
     match v {
         Value::String(s) => {
-            *s = interpolate(s, lookup).map_err(|e| ConfigError::Interpolation {
-                path: path.to_string(),
-                reason: e.to_string(),
-            })?;
+            *s = interpolate(s, lookup)
+                .map_err(|e| ConfigError::Interpolation { path: path.to_string(), reason: e.to_string() })?;
         }
         Value::Sequence(items) => {
             for (i, item) in items.iter_mut().enumerate() {
@@ -253,9 +259,12 @@ fn split_words(s: &str) -> Option<Vec<String>> {
 
 /// Quotes one argument for `sh -c`.
 fn shell_quote(arg: &str) -> String {
-    let safe = !arg.is_empty()
-        && arg.chars().all(|c| c.is_ascii_alphanumeric() || "_-./:=@%+,".contains(c));
-    if safe { arg.to_string() } else { format!("'{}'", arg.replace('\'', r"'\''")) }
+    let safe = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "_-./:=@%+,".contains(c));
+    if safe {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    }
 }
 
 fn convert_service<F>(
@@ -294,7 +303,9 @@ where
     let user = match user_value {
         None => None,
         Some(v) => {
-            let u = scalar(&v).map(|s| s.trim().to_string()).ok_or_else(|| field_err(name, "user", "must be a string or number"))?;
+            let u = scalar(&v)
+                .map(|s| s.trim().to_string())
+                .ok_or_else(|| field_err(name, "user", "must be a string or number"))?;
             if u.is_empty() {
                 return Err(ConfigError::EmptyUser(name.into()));
             }
@@ -329,9 +340,9 @@ where
         None => RestartPolicy::No,
         // YAML 1.1 readers turn an unquoted `no` into false; accept that spelling too
         Some(Value::Bool(false)) => RestartPolicy::No,
-        Some(Value::String(text)) => text
-            .parse()
-            .map_err(|e: crate::ParsePolicyError| field_err(name, "restart", e.to_string()))?,
+        Some(Value::String(text)) => {
+            text.parse().map_err(|e: crate::ParsePolicyError| field_err(name, "restart", e.to_string()))?
+        }
         Some(_) => return Err(field_err(name, "restart", "must be one of no, always, unless-stopped, on-failure[:N]")),
     };
     let stop_grace_period = raw
@@ -359,11 +370,7 @@ where
     })
 }
 
-fn convert_environment<F>(
-    name: &str,
-    env: Option<Value>,
-    lookup: &F,
-) -> Result<BTreeMap<String, String>, ConfigError>
+fn convert_environment<F>(name: &str, env: Option<Value>, lookup: &F) -> Result<BTreeMap<String, String>, ConfigError>
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -379,7 +386,8 @@ where
         None | Some(Value::Null) => {}
         Some(Value::Sequence(items)) => {
             for item in items {
-                let s = scalar(&item).ok_or_else(|| field_err(name, "environment", "entries must be KEY=value strings"))?;
+                let s =
+                    scalar(&item).ok_or_else(|| field_err(name, "environment", "entries must be KEY=value strings"))?;
                 match s.split_once('=') {
                     Some((k, v)) => {
                         check_key(k)?;
@@ -405,7 +413,8 @@ where
                         }
                     }
                     v => {
-                        let v = scalar(&v).ok_or_else(|| field_err(name, "environment", format!("value of {k} must be a scalar")))?;
+                        let v = scalar(&v)
+                            .ok_or_else(|| field_err(name, "environment", format!("value of {k} must be a scalar")))?;
                         out.insert(k, v);
                     }
                 }
@@ -432,7 +441,11 @@ fn convert_port(name: &str, v: &Value) -> Result<PortMapping, ConfigError> {
     let parts: Vec<&str> = addrs.split(':').collect();
     let hostport = match parts.as_slice() {
         [_] => {
-            return Err(field_err(name, "ports", format!("'{s}': a bare container port needs a random host port, which is not supported")))
+            return Err(field_err(
+                name,
+                "ports",
+                format!("'{s}': a bare container port needs a random host port, which is not supported"),
+            ))
         }
         [h, c] => format!("{h}:{c}{proto}"),
         [ip, h, c] => {
@@ -446,11 +459,7 @@ fn convert_port(name: &str, v: &Value) -> Result<PortMapping, ConfigError> {
     parse_port(name, &hostport)
 }
 
-fn convert_volumes(
-    name: &str,
-    volumes: &[Value],
-    declared: &[String],
-) -> Result<Vec<crate::VolumeMount>, ConfigError> {
+fn convert_volumes(name: &str, volumes: &[Value], declared: &[String]) -> Result<Vec<crate::VolumeMount>, ConfigError> {
     let mut out = Vec::new();
     for v in volumes {
         let Value::String(s) = v else {
@@ -460,7 +469,11 @@ fn convert_volumes(
         let mount = parse_volume(name, s.strip_suffix(":rw").unwrap_or(s))?;
         if let VolumeSource::Named(n) = &mount.source {
             if !declared.contains(n) {
-                return Err(field_err(name, "volumes", format!("named volume '{n}' is not declared in the top-level volumes")));
+                return Err(field_err(
+                    name,
+                    "volumes",
+                    format!("named volume '{n}' is not declared in the top-level volumes"),
+                ));
             }
         }
         out.push(mount);
@@ -482,9 +495,9 @@ fn convert_secrets(
         let Value::String(secret) = r else {
             return Err(field_err(name, "secrets", "only the short form (a list of secret names) is supported"));
         };
-        let file = declared
-            .get(secret)
-            .ok_or_else(|| field_err(name, "secrets", format!("secret '{secret}' is not declared in the top-level secrets")))?;
+        let file = declared.get(secret).ok_or_else(|| {
+            field_err(name, "secrets", format!("secret '{secret}' is not declared in the top-level secrets"))
+        })?;
         if !out.iter().any(|s| &s.name == secret) {
             out.push(SecretMount { name: secret.clone(), file: file.clone() });
         }
@@ -498,7 +511,8 @@ fn convert_depends_on(name: &str, v: Option<Value>) -> Result<BTreeMap<String, C
         None | Some(Value::Null) => {}
         Some(Value::Sequence(items)) => {
             for item in items {
-                let dep = item.as_str().ok_or_else(|| field_err(name, "depends_on", "entries must be service names"))?;
+                let dep =
+                    item.as_str().ok_or_else(|| field_err(name, "depends_on", "entries must be service names"))?;
                 out.insert(dep.to_string(), Condition::Started);
             }
         }
@@ -514,16 +528,32 @@ fn convert_depends_on(name: &str, v: Option<Value>) -> Result<BTreeMap<String, C
                                 (Some("condition"), Some("service_started")) => condition = Condition::Started,
                                 (Some("condition"), Some("service_healthy")) => condition = Condition::Healthy,
                                 (Some("condition"), Some(other)) => {
-                                    return Err(field_err(name, "depends_on", format!("condition '{other}' is not supported (service_started or service_healthy)")))
+                                    return Err(field_err(
+                                        name,
+                                        "depends_on",
+                                        format!(
+                                            "condition '{other}' is not supported (service_started or service_healthy)"
+                                        ),
+                                    ))
                                 }
                                 (Some(other), _) => {
-                                    return Err(field_err(name, "depends_on", format!("key '{other}' of '{dep}' is not supported")))
+                                    return Err(field_err(
+                                        name,
+                                        "depends_on",
+                                        format!("key '{other}' of '{dep}' is not supported"),
+                                    ))
                                 }
                                 _ => return Err(field_err(name, "depends_on", "invalid entry")),
                             }
                         }
                     }
-                    _ => return Err(field_err(name, "depends_on", format!("'{dep}' must be empty or a map with 'condition'"))),
+                    _ => {
+                        return Err(field_err(
+                            name,
+                            "depends_on",
+                            format!("'{dep}' must be empty or a map with 'condition'"),
+                        ))
+                    }
                 }
                 out.insert(dep, condition);
             }
@@ -552,7 +582,13 @@ fn convert_health(name: &str, h: RawHealthcheck) -> Result<Option<Health>, Confi
                 Some((kind, rest)) if kind == "CMD" && !rest.is_empty() => {
                     rest.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ")
                 }
-                _ => return Err(field_err(name, "healthcheck", "test must be [\"CMD-SHELL\", cmd], [\"CMD\", args...], [\"NONE\"] or a string")),
+                _ => {
+                    return Err(field_err(
+                        name,
+                        "healthcheck",
+                        "test must be [\"CMD-SHELL\", cmd], [\"CMD\", args...], [\"NONE\"] or a string",
+                    ))
+                }
             }
         }
     };

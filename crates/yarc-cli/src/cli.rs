@@ -423,7 +423,9 @@ mod tests {
     fn image_ls_and_rm() {
         assert!(matches!(parse(&["image", "ls"]).unwrap().command, Command::Image(ImageCommand::Ls)));
         assert!(matches!(parse(&["image", "list"]).unwrap().command, Command::Image(ImageCommand::Ls)));
-        let Command::Image(ImageCommand::Rm(a)) = parse(&["image", "rm", "a:1", "b"]).unwrap().command else { panic!() };
+        let Command::Image(ImageCommand::Rm(a)) = parse(&["image", "rm", "a:1", "b"]).unwrap().command else {
+            panic!()
+        };
         assert_eq!(a.images, ["a:1", "b"]);
         assert!(parse(&["image", "rm"]).is_err());
     }
@@ -459,15 +461,32 @@ mod tests {
         let err = parse(&["run", "--restart", "sometimes", "alpine"]).unwrap_err().to_string();
         assert!(err.contains("invalid restart policy 'sometimes'"), "{err}");
         assert!(parse(&["create", "--restart", "on-failure:0", "alpine"]).is_err());
-        let Command::Create(a) = parse(&["create", "--restart=always", "alpine", "true"]).unwrap().command else { panic!() };
+        let Command::Create(a) = parse(&["create", "--restart=always", "alpine", "true"]).unwrap().command else {
+            panic!()
+        };
         assert_eq!((a.restart, a.cmd.as_slice()), (RestartPolicy::Always, &["true".to_string()][..]));
     }
 
     #[test]
     fn create_options_before_the_image_and_command_after() {
         let cli = parse(&[
-            "create", "--name", "web", "-e", "A=1", "-e", "B=2", "--entrypoint", "/bin/sh", "-w", "/app",
-            "--network", "none", "alpine", "-c", "echo $A", "--not-an-option",
+            "create",
+            "--name",
+            "web",
+            "-e",
+            "A=1",
+            "-e",
+            "B=2",
+            "--entrypoint",
+            "/bin/sh",
+            "-w",
+            "/app",
+            "--network",
+            "none",
+            "alpine",
+            "-c",
+            "echo $A",
+            "--not-an-option",
         ])
         .unwrap();
         let Command::Create(a) = cli.command else { panic!() };
@@ -483,14 +502,18 @@ mod tests {
     #[test]
     fn container_subcommands() {
         assert!(matches!(parse(&["container", "ls"]).unwrap().command, Command::Container(ContainerCommand::Ls)));
-        let Command::Container(ContainerCommand::Rm(a)) = parse(&["container", "rm", "a", "b"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Rm(a)) = parse(&["container", "rm", "a", "b"]).unwrap().command else {
+            panic!()
+        };
         assert_eq!(a.ids, ["a", "b"]);
         assert!(parse(&["container", "rm"]).is_err());
     }
 
     #[test]
     fn run_takes_create_options_plus_rm_and_debug() {
-        let cli = parse(&["run", "--rm", "--debug", "--name", "web", "-e", "A=1", "alpine", "sh", "-c", "echo hi", "--rm"]).unwrap();
+        let cli =
+            parse(&["run", "--rm", "--debug", "--name", "web", "-e", "A=1", "alpine", "sh", "-c", "echo hi", "--rm"])
+                .unwrap();
         let Command::Run(a) = cli.command else { panic!() };
         assert!(a.rm && a.debug);
         assert_eq!((a.create.name.as_deref(), a.create.image.as_str()), (Some("web"), "alpine"));
@@ -517,7 +540,11 @@ mod tests {
         assert_eq!(a.create.cmd, ["-d"]);
         let Command::Run(a) = parse(&["run", "alpine"]).unwrap().command else { panic!() };
         assert!(!a.detach);
-        let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "-d", "web"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Start(a)) =
+            parse(&["container", "start", "-d", "web"]).unwrap().command
+        else {
+            panic!()
+        };
         assert!(a.detach);
         let Command::Ps(a) = parse(&["ps"]).unwrap().command else { panic!() };
         assert!(!a.all);
@@ -527,8 +554,15 @@ mod tests {
 
     #[test]
     fn the_holder_command_exists_but_is_hidden() {
-        let Command::Holder(a) = parse(&["__holder", "demo", "--publish", "8080:80", "--publish", "9:9"]).unwrap().command else { panic!() };
-        assert_eq!((a.project.as_str(), a.publish.as_slice()), ("demo", &["8080:80".to_string(), "9:9".to_string()][..]));
+        let Command::Holder(a) =
+            parse(&["__holder", "demo", "--publish", "8080:80", "--publish", "9:9"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert_eq!(
+            (a.project.as_str(), a.publish.as_slice()),
+            ("demo", &["8080:80".to_string(), "9:9".to_string()][..])
+        );
         use clap::CommandFactory;
         assert!(!Cli::command().render_help().to_string().contains("__holder"));
     }
@@ -544,18 +578,32 @@ mod tests {
 
     #[test]
     fn container_start() {
-        let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "web"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "web"]).unwrap().command
+        else {
+            panic!()
+        };
         assert_eq!((a.id.as_str(), a.debug, a.detach), ("web", false, false));
-        let Command::Container(ContainerCommand::Start(a)) = parse(&["container", "start", "--debug", "web"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Start(a)) =
+            parse(&["container", "start", "--debug", "web"]).unwrap().command
+        else {
+            panic!()
+        };
         assert!(a.debug);
         assert!(parse(&["container", "start"]).is_err());
     }
 
     #[test]
     fn container_logs() {
-        let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "web"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "web"]).unwrap().command
+        else {
+            panic!()
+        };
         assert_eq!((a.id.as_str(), a.tail, a.timestamps), ("web", None, false));
-        let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "--tail", "5", "-t", "web"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Logs(a)) =
+            parse(&["container", "logs", "--tail", "5", "-t", "web"]).unwrap().command
+        else {
+            panic!()
+        };
         assert_eq!((a.tail, a.timestamps), (Some(5), true));
         assert!(parse(&["container", "logs", "--tail", "x", "web"]).is_err());
     }
@@ -586,8 +634,15 @@ mod tests {
         assert_eq!(cli.project_file(), std::path::Path::new("docker-compose.yml"));
         assert_eq!(parse(&["up"]).unwrap().project_file(), std::path::Path::new("yarc.yaml"));
         assert_eq!(parse(&["--file", "a.yml", "up"]).unwrap().project_file(), std::path::Path::new("a.yml"));
-        assert_eq!(parse(&["--file", "a.yml", "-f", "b.yml", "up"]).unwrap().project_file(), std::path::Path::new("b.yml"));
-        let Command::Project(ProjectCommand::Logs(a)) = parse(&["-f", "c.yml", "project", "logs", "-f"]).unwrap().command else { panic!() };
+        assert_eq!(
+            parse(&["--file", "a.yml", "-f", "b.yml", "up"]).unwrap().project_file(),
+            std::path::Path::new("b.yml")
+        );
+        let Command::Project(ProjectCommand::Logs(a)) =
+            parse(&["-f", "c.yml", "project", "logs", "-f"]).unwrap().command
+        else {
+            panic!()
+        };
         assert!(a.follow);
         assert!(parse(&["-f", "a.yml", "-f", "b.yml", "up"]).is_err(), "several compose files are not supported");
         assert!(parse(&["up", "-f", "a.yml"]).is_err(), "-f is not accepted after the subcommand");
@@ -604,7 +659,11 @@ mod tests {
         assert_eq!(a.time, None);
         let Command::Down(a) = parse(&["down"]).unwrap().command else { panic!() };
         assert_eq!(a.time, None);
-        let Command::Project(ProjectCommand::Logs(a)) = parse(&["project", "logs", "-f", "-t", "--tail", "5", "web", "db"]).unwrap().command else { panic!() };
+        let Command::Project(ProjectCommand::Logs(a)) =
+            parse(&["project", "logs", "-f", "-t", "--tail", "5", "web", "db"]).unwrap().command
+        else {
+            panic!()
+        };
         assert!(a.follow && a.timestamps);
         assert_eq!((a.tail, a.services.as_slice()), (Some(5), &["web".to_string(), "db".to_string()][..]));
     }
@@ -612,11 +671,16 @@ mod tests {
     #[test]
     fn exec_takes_options_before_the_container_and_a_command_after_it() {
         let Command::Container(ContainerCommand::Exec(a)) =
-            parse(&["container", "exec", "-e", "A=1", "-w", "/tmp", "web", "sh", "-c", "echo $A", "--flag"]).unwrap().command
+            parse(&["container", "exec", "-e", "A=1", "-w", "/tmp", "web", "sh", "-c", "echo $A", "--flag"])
+                .unwrap()
+                .command
         else {
             panic!()
         };
-        assert_eq!((a.env.as_slice(), a.workdir.as_deref(), a.id.as_str()), (&["A=1".to_string()][..], Some("/tmp"), "web"));
+        assert_eq!(
+            (a.env.as_slice(), a.workdir.as_deref(), a.id.as_str()),
+            (&["A=1".to_string()][..], Some("/tmp"), "web")
+        );
         assert_eq!(a.cmd, ["sh", "-c", "echo $A", "--flag"]);
         assert!(matches!(parse(&["exec", "web", "ls"]).unwrap().command, Command::Direct(ContainerCommand::Exec(_))));
         assert!(parse(&["exec", "web"]).is_err(), "a command is required");
@@ -625,21 +689,47 @@ mod tests {
 
     #[test]
     fn control_commands() {
-        let Command::Container(ContainerCommand::Stop(a)) = parse(&["container", "stop", "a", "b"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Stop(a)) = parse(&["container", "stop", "a", "b"]).unwrap().command
+        else {
+            panic!()
+        };
         assert_eq!((a.time, a.ids.as_slice()), (10, &["a".to_string(), "b".to_string()][..]));
-        let Command::Container(ContainerCommand::Stop(a)) = parse(&["container", "stop", "-t", "3", "a"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Stop(a)) =
+            parse(&["container", "stop", "-t", "3", "a"]).unwrap().command
+        else {
+            panic!()
+        };
         assert_eq!(a.time, 3);
-        let Command::Container(ContainerCommand::Kill(a)) = parse(&["container", "kill", "a"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Kill(a)) = parse(&["container", "kill", "a"]).unwrap().command else {
+            panic!()
+        };
         assert_eq!(a.signal, "KILL");
-        let Command::Container(ContainerCommand::Kill(a)) = parse(&["container", "kill", "-s", "USR1", "a"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Kill(a)) =
+            parse(&["container", "kill", "-s", "USR1", "a"]).unwrap().command
+        else {
+            panic!()
+        };
         assert_eq!(a.signal, "USR1");
-        let Command::Container(ContainerCommand::Wait(a)) = parse(&["container", "wait", "a"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Wait(a)) = parse(&["container", "wait", "a"]).unwrap().command else {
+            panic!()
+        };
         assert_eq!(a.ids, ["a"]);
-        let Command::Container(ContainerCommand::Rm(a)) = parse(&["container", "rm", "-f", "a"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Rm(a)) = parse(&["container", "rm", "-f", "a"]).unwrap().command
+        else {
+            panic!()
+        };
         assert!(a.force);
-        let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "-f", "a"]).unwrap().command else { panic!() };
+        let Command::Container(ContainerCommand::Logs(a)) = parse(&["container", "logs", "-f", "a"]).unwrap().command
+        else {
+            panic!()
+        };
         assert!(a.follow);
-        for bad in [&["container", "stop"][..], &["container", "kill"], &["container", "wait"], &["container", "stop", "-t", "x", "a"]] {
+        for bad in [
+            &["container", "stop"][..],
+            &["container", "kill"],
+            &["container", "wait"],
+            &["container", "stop", "-t", "x", "a"],
+        ] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
     }

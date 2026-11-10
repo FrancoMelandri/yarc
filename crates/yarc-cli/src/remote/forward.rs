@@ -64,7 +64,11 @@ pub fn plan(cli: &Cli, paths: &Paths) -> Result<Option<Forward>> {
         file: if needs_project { Some(paths.linux(&crate::project::resolve_file(&cli.project_file()))?) } else { None },
         project: cli.project.clone(),
         profiles: if needs_project { cli.profile.clone() } else { Vec::new() },
-        env_files: if needs_project { cli.env_file.iter().map(|p| paths.linux(p)).collect::<Result<Vec<_>>>()? } else { Vec::new() },
+        env_files: if needs_project {
+            cli.env_file.iter().map(|p| paths.linux(p)).collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        },
     };
     Ok(Some(Forward { globals, command }))
 }
@@ -127,7 +131,17 @@ mod tests {
 
     #[test]
     fn project_file_options_are_translated_for_the_linux_side() {
-        let f = plan_of(&["-f", r"C:\work\app\docker-compose.yml", "--env-file", r"C:\work\app\prod.env", "--env-file", "rel.env", "up", "-d"]).unwrap();
+        let f = plan_of(&[
+            "-f",
+            r"C:\work\app\docker-compose.yml",
+            "--env-file",
+            r"C:\work\app\prod.env",
+            "--env-file",
+            "rel.env",
+            "up",
+            "-d",
+        ])
+        .unwrap();
         assert_eq!(f.globals.file.as_deref(), Some("/mnt/c/work/app/docker-compose.yml"));
         assert_eq!(f.globals.env_files, ["/mnt/c/work/app/prod.env", "/mnt/c/cwd/rel.env"]);
         // commands that do not read a project file send neither
@@ -173,7 +187,10 @@ mod tests {
 
     #[test]
     fn path_arguments_are_translated() {
-        assert_eq!(command(&["load", r"C:\bundle\images.tar"]), Command::Load { file: "/mnt/c/bundle/images.tar".into() });
+        assert_eq!(
+            command(&["load", r"C:\bundle\images.tar"]),
+            Command::Load { file: "/mnt/c/bundle/images.tar".into() }
+        );
         assert_eq!(
             command(&["image", "unpack", "alpine", r"D:\rootfs"]),
             Command::ImageUnpack { image: "alpine".into(), dir: "/mnt/d/rootfs".into() }
@@ -188,7 +205,25 @@ mod tests {
 
     #[test]
     fn run_and_create_carry_every_option() {
-        let c = command(&["run", "--rm", "-d", "--name", "w", "-e", "A=1", "-w", "/x", "-u", "root", "--network", "none", "alpine:3.20", "sh", "-c", "echo hi"]);
+        let c = command(&[
+            "run",
+            "--rm",
+            "-d",
+            "--name",
+            "w",
+            "-e",
+            "A=1",
+            "-w",
+            "/x",
+            "-u",
+            "root",
+            "--network",
+            "none",
+            "alpine:3.20",
+            "sh",
+            "-c",
+            "echo hi",
+        ]);
         assert_eq!(
             c,
             Command::Run {
@@ -211,7 +246,9 @@ mod tests {
         assert!(matches!(command(&["create", "alpine"]), Command::Create(s) if s.network.as_deref() == Some("host")));
         // a restart policy is forwarded as text; the default is not sent at all
         assert!(matches!(command(&["create", "alpine"]), Command::Create(s) if s.restart.is_none()));
-        assert!(matches!(command(&["run", "-d", "--restart", "on-failure:3", "alpine"]), Command::Run { spec, .. } if spec.restart.as_deref() == Some("on-failure:3")));
+        assert!(
+            matches!(command(&["run", "-d", "--restart", "on-failure:3", "alpine"]), Command::Run { spec, .. } if spec.restart.as_deref() == Some("on-failure:3"))
+        );
     }
 
     #[test]
@@ -229,7 +266,12 @@ mod tests {
         );
         assert_eq!(
             command(&["exec", "-e", "K=V", "-w", "/w", "a", "ls", "-l"]),
-            Command::Exec { id: "a".into(), env: vec!["K=V".into()], workdir: Some("/w".into()), cmd: vec!["ls".into(), "-l".into()] }
+            Command::Exec {
+                id: "a".into(),
+                env: vec!["K=V".into()],
+                workdir: Some("/w".into()),
+                cmd: vec!["ls".into(), "-l".into()]
+            }
         );
         assert_eq!(command(&["start", "-d", "a"]), Command::Start { id: "a".into(), detach: true, debug: false });
     }

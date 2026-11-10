@@ -29,7 +29,12 @@ impl Proj {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_yarc"));
-        cmd.arg("--root").arg(self.root.path()).arg("--file").arg(self.dir.path().join("yarc.yaml")).args(["-p", "demo"]).args(args);
+        cmd.arg("--root")
+            .arg(self.root.path())
+            .arg("--file")
+            .arg(self.dir.path().join("yarc.yaml"))
+            .args(["-p", "demo"])
+            .args(args);
         cmd
     }
 
@@ -38,7 +43,8 @@ impl Proj {
     }
 
     fn started_ms(&self, container: &str) -> u64 {
-        let state = std::fs::read_to_string(self.root.path().join("containers").join(container).join("state.json")).unwrap();
+        let state =
+            std::fs::read_to_string(self.root.path().join("containers").join(container).join("state.json")).unwrap();
         serde_json::from_str::<serde_json::Value>(&state).unwrap()["started_ms"].as_u64().unwrap()
     }
 
@@ -47,7 +53,15 @@ impl Proj {
     }
 
     fn all_containers(&self) -> String {
-        text(&Command::new(env!("CARGO_BIN_EXE_yarc")).arg("--root").arg(self.root.path()).args(["ps", "-a"]).output().unwrap().stdout)
+        text(
+            &Command::new(env!("CARGO_BIN_EXE_yarc"))
+                .arg("--root")
+                .arg(self.root.path())
+                .args(["ps", "-a"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
     }
 }
 
@@ -206,7 +220,11 @@ fn two_projects_can_use_the_same_service_names() {
 
     // and within one store, a different project name is a different project
     let other = Command::new(env!("CARGO_BIN_EXE_yarc"))
-        .arg("--root").arg(a.root.path()).arg("--file").arg(a.dir.path().join("yarc.yaml")).args(["-p", "other", "project", "ps"])
+        .arg("--root")
+        .arg(a.root.path())
+        .arg("--file")
+        .arg(a.dir.path().join("yarc.yaml"))
+        .args(["-p", "other", "project", "ps"])
         .output()
         .unwrap();
     assert_eq!(text(&other.stdout).lines().count(), 1, "'other' has no containers");
@@ -246,7 +264,9 @@ fn a_container_is_starting_until_its_first_check_passes() {
     assert!(p.ps().contains("Running (starting)"), "{}", p.ps());
     eventually("healthy", || p.ps().contains("Running (healthy)"));
     // `ps` without -a lists it too
-    let running = text(&Command::new(env!("CARGO_BIN_EXE_yarc")).arg("--root").arg(p.root.path()).arg("ps").output().unwrap().stdout);
+    let running = text(
+        &Command::new(env!("CARGO_BIN_EXE_yarc")).arg("--root").arg(p.root.path()).arg("ps").output().unwrap().stdout,
+    );
     assert!(running.contains("demo-db-1"), "{running}");
 }
 

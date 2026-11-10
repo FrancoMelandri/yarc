@@ -42,12 +42,14 @@ pub fn run<R: BufRead, W: Write>(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32> {
-    send(output, &ClientFrame::Hello { version: PROTOCOL_VERSION, client: format!("yarc {}", env!("CARGO_PKG_VERSION")) })
-        .map_err(lost)?;
+    send(
+        output,
+        &ClientFrame::Hello { version: PROTOCOL_VERSION, client: format!("yarc {}", env!("CARGO_PKG_VERSION")) },
+    )
+    .map_err(lost)?;
     match read_frame::<_, AgentFrame>(&mut input).map_err(lost)? {
-        Some(AgentFrame::Hello { version, .. }) => check_version(version).map_err(|e| {
-            anyhow!("{e}; install the same yarc version inside WSL (see `yarc doctor`)")
-        })?,
+        Some(AgentFrame::Hello { version, .. }) => check_version(version)
+            .map_err(|e| anyhow!("{e}; install the same yarc version inside WSL (see `yarc doctor`)"))?,
         Some(AgentFrame::Fatal { message }) => bail!("the agent refused the connection: {message}"),
         Some(other) => bail!("the agent started with an unexpected frame: {other:?}"),
         None => return Err(ended()),

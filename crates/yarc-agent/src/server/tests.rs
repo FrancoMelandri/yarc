@@ -1,7 +1,7 @@
 use std::io::BufReader;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -43,11 +43,11 @@ struct Client {
     server: JoinHandle<Result<(), ProtoError>>,
 }
 
-fn connect(exe: &PathBuf) -> Client {
+fn connect(exe: &Path) -> Client {
     let (client, agent) = UnixStream::pair().unwrap();
     client.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
     let agent_out = agent.try_clone().unwrap();
-    let exe = exe.clone();
+    let exe = exe.to_path_buf();
     let server = std::thread::spawn(move || serve(BufReader::new(agent), agent_out, &exe));
     Client { from_agent: BufReader::new(client.try_clone().unwrap()), to_agent: client, server }
 }

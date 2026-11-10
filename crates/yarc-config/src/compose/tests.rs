@@ -123,8 +123,14 @@ fn ports_unsupported_forms() {
 fn volumes_named_host_and_modes() {
     let y = "services:\n  a:\n    image: i\n    volumes:\n      - data:/data\n      - ./certs:/certs:ro\n      - /abs:/abs:rw\nvolumes:\n  data:\n";
     let v = &ok(y).services["a"].volumes;
-    assert_eq!(v[0], VolumeMount { source: VolumeSource::Named("data".into()), target: "/data".into(), read_only: false });
-    assert_eq!(v[1], VolumeMount { source: VolumeSource::Host("./certs".into()), target: "/certs".into(), read_only: true });
+    assert_eq!(
+        v[0],
+        VolumeMount { source: VolumeSource::Named("data".into()), target: "/data".into(), read_only: false }
+    );
+    assert_eq!(
+        v[1],
+        VolumeMount { source: VolumeSource::Host("./certs".into()), target: "/certs".into(), read_only: true }
+    );
     assert!(!v[2].read_only);
 }
 
@@ -166,7 +172,10 @@ fn depends_on_problems() {
 fn user_workdir_container_name() {
     let p = ok(&svc("    user: \"1000:1000\"\n    working_dir: /srv\n    container_name: my-app.1"));
     let a = &p.services["a"];
-    assert_eq!((a.user.as_deref(), a.working_dir.as_deref(), a.container_name.as_deref()), (Some("1000:1000"), Some("/srv"), Some("my-app.1")));
+    assert_eq!(
+        (a.user.as_deref(), a.working_dir.as_deref(), a.container_name.as_deref()),
+        (Some("1000:1000"), Some("/srv"), Some("my-app.1"))
+    );
     assert_eq!(ok(&svc("    user: 0")).services["a"].user.as_deref(), Some("0"));
     assert!(err(&svc("    working_dir: rel")).contains("absolute"));
     assert!(err(&svc("    container_name: \"bad name\"")).contains("container_name"));
@@ -375,7 +384,12 @@ fn restart_policies() {
     assert_eq!(policy("no"), RestartPolicy::No, "unquoted no is a string for this parser");
     assert_eq!(policy("false"), RestartPolicy::No);
     assert_eq!(ok(&svc("")).services["a"].restart, RestartPolicy::No);
-    for (v, needle) in [("sometimes", "invalid restart policy 'sometimes'"), ("on-failure:0", "at least 1"), ("true", "must be one of"), ("[always]", "must be one of")] {
+    for (v, needle) in [
+        ("sometimes", "invalid restart policy 'sometimes'"),
+        ("on-failure:0", "at least 1"),
+        ("true", "must be one of"),
+        ("[always]", "must be one of"),
+    ] {
         let e = err(&svc(&format!("    restart: {v}")));
         assert!(e.contains("service 'a': restart:") && e.contains(needle), "{v}: {e}");
     }

@@ -122,7 +122,9 @@ fn command_args(command: &Command) -> Result<Vec<String>, ArgError> {
             need("images", images)?;
             a.word("image").word("rm").pos(images.clone()).finish()
         }
-        Command::ImageUnpack { image, dir } => a.word("image").word("unpack").pos([image.clone(), dir.clone()]).finish(),
+        Command::ImageUnpack { image, dir } => {
+            a.word("image").word("unpack").pos([image.clone(), dir.clone()]).finish()
+        }
         Command::Create(spec) => create_positionals(create_opts(a.word("create"), spec), spec).finish(),
         Command::Run { spec, rm, detach, debug } => {
             let a = a.word("run").flag(*rm, "--rm").flag(*detach, "--detach").flag(*debug, "--debug");
@@ -130,9 +132,13 @@ fn command_args(command: &Command) -> Result<Vec<String>, ArgError> {
         }
         Command::Ps { all } => a.word("ps").flag(*all, "--all").finish(),
         Command::ContainerLs => a.word("container").word("ls").finish(),
-        Command::Start { id, detach, debug } => {
-            a.word("container").word("start").flag(*detach, "--detach").flag(*debug, "--debug").pos([id.clone()]).finish()
-        }
+        Command::Start { id, detach, debug } => a
+            .word("container")
+            .word("start")
+            .flag(*detach, "--detach")
+            .flag(*debug, "--debug")
+            .pos([id.clone()])
+            .finish(),
         Command::Exec { id, env, workdir, cmd } => {
             need("cmd", cmd)?;
             a.word("container")
@@ -197,10 +203,25 @@ mod tests {
 
     #[test]
     fn globals_come_first() {
-        let g = Globals { root: Some("/r".into()), file: Some("/p/y.yaml".into()), project: Some("demo".into()), profiles: vec!["obs".into(), "dbg".into()], env_files: vec!["/p/.env.prod".into()] };
+        let g = Globals {
+            root: Some("/r".into()),
+            file: Some("/p/y.yaml".into()),
+            project: Some("demo".into()),
+            profiles: vec!["obs".into(), "dbg".into()],
+            env_files: vec!["/p/.env.prod".into()],
+        };
         assert_eq!(
             to_args(&g, &Command::Up { detach: true }).unwrap(),
-            ["--root=/r", "--file=/p/y.yaml", "--profile=obs", "--profile=dbg", "--env-file=/p/.env.prod", "--project=demo", "up", "--detach"]
+            [
+                "--root=/r",
+                "--file=/p/y.yaml",
+                "--profile=obs",
+                "--profile=dbg",
+                "--env-file=/p/.env.prod",
+                "--project=demo",
+                "up",
+                "--detach"
+            ]
         );
         assert_eq!(to_args(&Globals::default(), &Command::ProjectConfig).unwrap(), ["project", "config"]);
     }
@@ -208,7 +229,10 @@ mod tests {
     #[test]
     fn positionals_follow_a_double_dash_so_they_can_never_be_options() {
         assert_eq!(args(Command::Load { file: "--root=/x".into() }), ["load", "--", "--root=/x"]);
-        assert_eq!(args(Command::Pull { image: "-h".into(), jobs: Some(2), platform: None }), ["pull", "--jobs=2", "--", "-h"]);
+        assert_eq!(
+            args(Command::Pull { image: "-h".into(), jobs: Some(2), platform: None }),
+            ["pull", "--jobs=2", "--", "-h"]
+        );
     }
 
     #[test]
@@ -221,8 +245,20 @@ mod tests {
         assert_eq!(
             args(Command::Run { spec: s, rm: true, detach: false, debug: true }),
             [
-                "run", "--rm", "--debug", "--name=web", "--env=A=1", "--env=B=-2", "--entrypoint=", "--network=none", "--",
-                "alpine:3.20", "sh", "-c", "echo hi", "--version"
+                "run",
+                "--rm",
+                "--debug",
+                "--name=web",
+                "--env=A=1",
+                "--env=B=-2",
+                "--entrypoint=",
+                "--network=none",
+                "--",
+                "alpine:3.20",
+                "sh",
+                "-c",
+                "echo hi",
+                "--version"
             ]
         );
     }
@@ -235,7 +271,12 @@ mod tests {
             ["container", "start", "--detach", "--", "c"]
         );
         assert_eq!(
-            args(Command::Exec { id: "c".into(), env: vec!["X=1".into()], workdir: Some("/w".into()), cmd: vec!["ls".into(), "-l".into()] }),
+            args(Command::Exec {
+                id: "c".into(),
+                env: vec!["X=1".into()],
+                workdir: Some("/w".into()),
+                cmd: vec!["ls".into(), "-l".into()]
+            }),
             ["container", "exec", "--env=X=1", "--workdir=/w", "--", "c", "ls", "-l"]
         );
     }
@@ -278,7 +319,10 @@ mod tests {
     fn images_and_projects() {
         assert_eq!(args(Command::ImageLs), ["image", "ls"]);
         assert_eq!(args(Command::ImageRm { images: vec!["a:1".into()] }), ["image", "rm", "--", "a:1"]);
-        assert_eq!(args(Command::ImageUnpack { image: "a".into(), dir: "/d".into() }), ["image", "unpack", "--", "a", "/d"]);
+        assert_eq!(
+            args(Command::ImageUnpack { image: "a".into(), dir: "/d".into() }),
+            ["image", "unpack", "--", "a", "/d"]
+        );
         assert_eq!(args(Command::Down { time: Some(1), volumes: true }), ["down", "--time=1", "--volumes"]);
         assert_eq!(args(Command::ProjectPs), ["project", "ps"]);
         assert_eq!(args(Command::ProjectStop { time: Some(2) }), ["project", "stop", "--time=2"]);

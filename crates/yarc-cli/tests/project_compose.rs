@@ -149,7 +149,12 @@ fn profiles_select_services_by_flag_or_environment() {
     assert!(plain.contains("demo-app-1") && !plain.contains("demo-dash-1"), "{plain}");
     assert!(plain.contains("stop grace period 20s") && plain.contains("secrets token"), "{plain}");
     // what was left out is said, with the flag that brings it back
-    assert!(plain.contains("not included: dash: not started, it belongs to profile observability (use --profile observability"), "{plain}");
+    assert!(
+        plain.contains(
+            "not included: dash: not started, it belongs to profile observability (use --profile observability"
+        ),
+        "{plain}"
+    );
 
     let flagged = config(&["--profile", "observability"], &[]);
     assert!(flagged.contains("demo-dash-1") && flagged.contains("profiles observability"), "{flagged}");
@@ -231,7 +236,11 @@ fn a_missing_or_broken_env_file_is_reported_without_contents() {
     let dir = project("compose.yaml", COMPOSE, Some("TOKEN=x\n"));
     let out = config_with(dir.path(), &["--env-file", "nope.env"], &[]);
     assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("cannot read env file") && text(&out.stderr).contains("nope.env"), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("cannot read env file") && text(&out.stderr).contains("nope.env"),
+        "{}",
+        text(&out.stderr)
+    );
 
     std::fs::write(dir.path().join("bad.env"), "TOKEN=hunter2\nnot a pair\n").unwrap();
     let out = config_with(dir.path(), &["--env-file", "bad.env"], &[]);
@@ -246,6 +255,13 @@ fn dash_f_names_the_project_file_before_the_subcommand() {
     let out = run(dir.path(), &["-f", "stack.yml", "-p", "demo", "project", "config"], &[("TOKEN", "x")]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(text(&out.stdout).contains("stack.yml"));
+}
+
+// `project logs` needs the runtime (a WSL agent on Windows, which CI runners do not have).
+#[cfg(unix)]
+#[test]
+fn dash_f_does_not_steal_logs_follow() {
+    let dir = project("stack.yml", COMPOSE, None);
     // `project logs -f` is still follow, not a project file
     // (nothing was started, so the command itself says so: it parsed, and ran)
     let out = run(dir.path(), &["-f", "stack.yml", "-p", "demo", "project", "logs", "-f"], &[("TOKEN", "x")]);

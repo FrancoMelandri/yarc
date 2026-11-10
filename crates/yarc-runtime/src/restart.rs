@@ -203,7 +203,10 @@ mod tests {
     #[test]
     fn backoff_scales_for_tests_and_never_overflows() {
         let b = Backoff::with_initial(Duration::from_millis(20));
-        assert_eq!((b.initial, b.max, b.reset_after), (Duration::from_millis(20), Duration::from_millis(1200), Duration::from_millis(200)));
+        assert_eq!(
+            (b.initial, b.max, b.reset_after),
+            (Duration::from_millis(20), Duration::from_millis(1200), Duration::from_millis(200))
+        );
         assert_eq!(b.delay(0), Duration::from_millis(20));
         assert_eq!(b.delay(3), Duration::from_millis(160));
         assert_eq!(b.delay(u32::MAX), b.max);

@@ -132,10 +132,17 @@ fn helper(
 /// Opens everything under `/proc/<pid>` first (afterwards `/proc` is not ours
 /// any more), then joins the namespaces. Returns the container's root directory.
 fn join_namespaces(spec: &ContainerSpec, pid: u32) -> std::result::Result<File, String> {
-    let open = |what: &str, path: String| File::open(&path).map_err(|e| format!("cannot open {what} of container process {pid}: {e}"));
+    let open = |what: &str, path: String| {
+        File::open(&path).map_err(|e| format!("cannot open {what} of container process {pid}: {e}"))
+    };
 
     let root = open("root directory", format!("/proc/{pid}/root"))?;
-    let mut wanted = vec![("user", CloneFlags::CLONE_NEWUSER), ("mnt", CloneFlags::CLONE_NEWNS), ("uts", CloneFlags::CLONE_NEWUTS), ("ipc", CloneFlags::CLONE_NEWIPC)];
+    let mut wanted = vec![
+        ("user", CloneFlags::CLONE_NEWUSER),
+        ("mnt", CloneFlags::CLONE_NEWNS),
+        ("uts", CloneFlags::CLONE_NEWUTS),
+        ("ipc", CloneFlags::CLONE_NEWIPC),
+    ];
     if spec.network != Network::Host {
         wanted.push(("net", CloneFlags::CLONE_NEWNET));
     }

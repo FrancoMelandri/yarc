@@ -199,23 +199,16 @@ impl BlobStore {
         };
         let json_err = |msg: String| OciError::Json { what: "ref file".into(), msg };
         let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| json_err(e.to_string()))?;
-        let d = v
-            .get("digest")
-            .and_then(|d| d.as_str())
-            .ok_or_else(|| json_err("missing 'digest'".into()))?;
+        let d = v.get("digest").and_then(|d| d.as_str()).ok_or_else(|| json_err("missing 'digest'".into()))?;
         Digest::parse(d).map(Some)
     }
 
     /// Load a pulled image (manifest + config) by reference.
     pub fn load_image(&self, reference: &Reference) -> Result<StoredImage> {
-        let manifest_digest = self
-            .get_ref(reference)?
-            .ok_or_else(|| OciError::NotFound(reference.to_string()))?;
+        let manifest_digest = self.get_ref(reference)?.ok_or_else(|| OciError::NotFound(reference.to_string()))?;
         let manifest = match parse_manifest(&self.read_blob(&manifest_digest)?)? {
             Manifest::Image(m) => m,
-            Manifest::Index(_) => {
-                return Err(OciError::Unsupported("stored manifest is an image index".into()))
-            }
+            Manifest::Index(_) => return Err(OciError::Unsupported("stored manifest is an image index".into())),
         };
         let config = parse_config(&self.read_blob(&Digest::parse(&manifest.config.digest)?)?)?;
         Ok(StoredImage { reference: reference.clone(), manifest_digest, manifest, config })
@@ -245,9 +238,7 @@ impl BlobStore {
     pub fn image_blobs(&self, manifest_digest: &Digest) -> Result<Vec<Digest>> {
         let manifest = match parse_manifest(&self.read_blob(manifest_digest)?)? {
             Manifest::Image(m) => m,
-            Manifest::Index(_) => {
-                return Err(OciError::Unsupported("stored manifest is an image index".into()))
-            }
+            Manifest::Index(_) => return Err(OciError::Unsupported("stored manifest is an image index".into())),
         };
         let mut blobs = vec![manifest_digest.clone(), Digest::parse(&manifest.config.digest)?];
         for layer in &manifest.layers {
@@ -400,7 +391,9 @@ mod tests {
 
     /// Store an image made of `layers` under `name`; returns its manifest digest.
     fn put_image(s: &BlobStore, name: &str, layers: &[&[u8]]) -> Digest {
-        let config = format!(r#"{{"architecture":"amd64","os":"linux","created":"2026-01-02T03:04:05Z","config":{{}},"tag":"{name}"}}"#);
+        let config = format!(
+            r#"{{"architecture":"amd64","os":"linux","created":"2026-01-02T03:04:05Z","config":{{}},"tag":"{name}"}}"#
+        );
         let cd = Digest::of(config.as_bytes());
         s.put_bytes(&cd, config.as_bytes()).unwrap();
         let mut descs = Vec::new();

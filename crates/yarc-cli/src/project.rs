@@ -89,10 +89,15 @@ fn check_service_name(project: &str, service: &str) -> Result<()> {
     let ok = chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
     if !ok {
-        bail!("invalid service name '{service}': use letters, digits, '_', '.' and '-', starting with a letter or digit");
+        bail!(
+            "invalid service name '{service}': use letters, digits, '_', '.' and '-', starting with a letter or digit"
+        );
     }
     if container_name(project, service).len() > MAX_CONTAINER_NAME {
-        bail!("service name '{service}' is too long: '{}' would exceed {MAX_CONTAINER_NAME} characters", container_name(project, service));
+        bail!(
+            "service name '{service}' is too long: '{}' would exceed {MAX_CONTAINER_NAME} characters",
+            container_name(project, service)
+        );
     }
     Ok(())
 }
@@ -106,10 +111,8 @@ pub fn start_order(project: &Project) -> Result<Vec<String>> {
         .map(|(name, svc)| (name.as_str(), svc.needs.keys().map(String::as_str).collect()))
         .collect();
     let mut order = Vec::new();
-    while let Some(next) = remaining
-        .iter()
-        .find(|(_, deps)| deps.iter().all(|d| !remaining.contains_key(d)))
-        .map(|(name, _)| *name)
+    while let Some(next) =
+        remaining.iter().find(|(_, deps)| deps.iter().all(|d| !remaining.contains_key(d))).map(|(name, _)| *name)
     {
         remaining.remove(next);
         order.push(next.to_string());
@@ -200,7 +203,8 @@ pub fn resolve_volume(
     }
     let source = match &v.source {
         yarc_config::VolumeSource::Named(name) => {
-            if !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) || name.starts_with('.') {
+            if !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) || name.starts_with('.')
+            {
                 return Err(invalid("a volume name may only contain letters, digits, '_', '.' and '-'"));
             }
             volumes_dir.join(format!("{project}_{name}"))
@@ -230,12 +234,17 @@ fn prepare_volumes(root: &Path, loaded: &Loaded, def: &Service) -> Result<Vec<ya
     for v in &def.volumes {
         let spec = resolve_volume(base, &root.join("volumes"), &loaded.name, home.as_deref(), v)?;
         if !spec.source.exists() {
-            std::fs::create_dir_all(&spec.source).with_context(|| format!("cannot create {}", spec.source.display()))?;
+            std::fs::create_dir_all(&spec.source)
+                .with_context(|| format!("cannot create {}", spec.source.display()))?;
         }
         specs.push(spec);
     }
     for (secret, source) in secret_files(loaded, def)? {
-        specs.push(yarc_runtime::VolumeSpec { source, target: format!("/run/secrets/{}", secret.name), read_only: true });
+        specs.push(yarc_runtime::VolumeSpec {
+            source,
+            target: format!("/run/secrets/{}", secret.name),
+            read_only: true,
+        });
     }
     Ok(specs)
 }
@@ -327,9 +336,8 @@ pub fn labels(project: &str, service: &str, hash: &str) -> BTreeMap<String, Stri
 /// shutdown); containers of services that are no longer in the file ("orphans")
 /// come first when stopping and last otherwise.
 pub fn sort_by_service_order(specs: &mut [ContainerSpec], order: &[String], descending: bool) {
-    let position = |spec: &ContainerSpec| {
-        spec.labels.get(LABEL_SERVICE).and_then(|s| order.iter().position(|o| o == s))
-    };
+    let position =
+        |spec: &ContainerSpec| spec.labels.get(LABEL_SERVICE).and_then(|s| order.iter().position(|o| o == s));
     specs.sort_by(|a, b| {
         let (pa, pb) = (position(a), position(b));
         let ord = match (pa, pb) {
@@ -338,7 +346,11 @@ pub fn sort_by_service_order(specs: &mut [ContainerSpec], order: &[String], desc
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a.id.cmp(&b.id),
         };
-        if descending { ord.reverse() } else { ord }
+        if descending {
+            ord.reverse()
+        } else {
+            ord
+        }
     });
 }
 
@@ -358,7 +370,8 @@ pub fn project_name(opts: &Opts) -> Result<String> {
 }
 
 /// Names tried, in order, when `--file` was left at its default and `yarc.yaml` does not exist.
-const COMPOSE_FILE_NAMES: [&str; 5] = ["yarc.yml", "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+const COMPOSE_FILE_NAMES: [&str; 5] =
+    ["yarc.yml", "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
 const DEFAULT_FILE: &str = "yarc.yaml";
 
 /// The project file to use: the requested one, or (only for the default name) the first
@@ -378,10 +391,7 @@ fn discover_in(dir: &Path) -> Option<&'static str> {
 
 /// `yarc.yaml` / `yarc.yml` use the native format; any other name is read as a Compose file.
 fn is_compose_file(file: &Path) -> bool {
-    !file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("yarc."))
+    !file.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("yarc."))
 }
 
 /// Variables for compose interpolation, from the `--env-file`s (later ones win) or, when none
@@ -397,9 +407,11 @@ fn compose_variables(dir: &Path, env_files: &[PathBuf]) -> Result<BTreeMap<Strin
     let mut merged = BTreeMap::new();
     for file in files {
         let path = std::path::absolute(&file).with_context(|| format!("cannot resolve {}", file.display()))?;
-        let text = std::fs::read_to_string(&path).with_context(|| format!("cannot read env file {}", path.display()))?;
-        let vars = yarc_config::parse_dotenv(&text, &|n: &str| std::env::var(n).ok().or_else(|| merged.get(n).cloned()))
-            .with_context(|| path.display().to_string())?;
+        let text =
+            std::fs::read_to_string(&path).with_context(|| format!("cannot read env file {}", path.display()))?;
+        let vars =
+            yarc_config::parse_dotenv(&text, &|n: &str| std::env::var(n).ok().or_else(|| merged.get(n).cloned()))
+                .with_context(|| path.display().to_string())?;
         merged.extend(vars);
     }
     Ok(merged)
@@ -456,11 +468,7 @@ pub fn load(opts: &Opts) -> Result<Loaded> {
 }
 
 pub fn project_containers(store: &ContainerStore, project: &str) -> Result<Vec<ContainerSpec>> {
-    Ok(store
-        .list()?
-        .into_iter()
-        .filter(|c| c.labels.get(LABEL_PROJECT).is_some_and(|p| p == project))
-        .collect())
+    Ok(store.list()?.into_iter().filter(|c| c.labels.get(LABEL_PROJECT).is_some_and(|p| p == project)).collect())
 }
 
 /// Order for shutdown when the file may be gone: use it if it loads.
@@ -556,7 +564,18 @@ pub fn ps(root: &Path, opts: &Opts) -> Result<()> {
     // columns as wide as their longest cell, so long service names do not break the table
     let widths: Vec<usize> = (0..4).map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap_or(0)).collect();
     for row in &rows {
-        let line = format!("{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {}", row[0], row[1], row[2], row[3], row[4], w0 = widths[0], w1 = widths[1], w2 = widths[2], w3 = widths[3]);
+        let line = format!(
+            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {}",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2],
+            w3 = widths[3]
+        );
         println!("{}", line.trim_end());
     }
     Ok(())
@@ -578,7 +597,12 @@ pub struct Source {
 /// Prints the logs of several containers, each line prefixed with its label,
 /// merged by timestamp. With `follow`, keeps going until none of the
 /// containers is running any more. Returns `true` if `interrupted` ended it.
-pub fn stream_logs(store: &ContainerStore, mut sources: Vec<Source>, opts: &StreamOpts, interrupted: &dyn Fn() -> bool) -> Result<bool> {
+pub fn stream_logs(
+    store: &ContainerStore,
+    mut sources: Vec<Source>,
+    opts: &StreamOpts,
+    interrupted: &dyn Fn() -> bool,
+) -> Result<bool> {
     let width = sources.iter().map(|s| s.label.len()).max().unwrap_or(0);
     let mut first = true;
     loop {
@@ -637,7 +661,11 @@ pub fn logs(root: &Path, opts: &Opts, args: crate::cli::ProjectLogsArgs) -> Resu
     sort_by_service_order(&mut specs, &shutdown_order(opts), false);
     let sources = specs
         .iter()
-        .map(|s| Source { label: s.labels.get(LABEL_SERVICE).cloned().unwrap_or_else(|| s.id.clone()), id: s.id.clone(), offset: 0 })
+        .map(|s| Source {
+            label: s.labels.get(LABEL_SERVICE).cloned().unwrap_or_else(|| s.id.clone()),
+            id: s.id.clone(),
+            offset: 0,
+        })
         .collect();
     let stream = StreamOpts { tail: args.tail, timestamps: args.timestamps, follow: args.follow };
     stream_logs(&store, sources, &stream, &|| false)?;
@@ -687,7 +715,14 @@ enum Action {
 /// Brings one service up; returns the log offset from which this run's output
 /// starts (so a foreground `up` does not replay earlier runs).
 #[cfg(target_os = "linux")]
-fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Loaded, service: &str, def: &Service) -> Result<u64> {
+fn up_service(
+    root: &Path,
+    store: &ContainerStore,
+    net: &ProjectNet,
+    loaded: &Loaded,
+    service: &str,
+    def: &Service,
+) -> Result<u64> {
     use crate::commands::{create_new, NewContainer};
 
     let project = loaded.name.as_str();
@@ -698,7 +733,11 @@ fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Lo
     let hash = service_hash(def);
     let action = match store.load(&cname) {
         Ok(spec) if spec.labels.get(LABEL_HASH) == Some(&hash) => {
-            if store.is_supervised(&cname)? { Action::UpToDate } else { Action::Start }
+            if store.is_supervised(&cname)? {
+                Action::UpToDate
+            } else {
+                Action::Start
+            }
         }
         Ok(_) => Action::Recreate,
         Err(RuntimeError::NotFound(_)) => Action::Create,
@@ -722,7 +761,6 @@ fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Lo
                     working_dir: def.working_dir.clone(),
                     user: def.user.clone(),
                     env: def.env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
-                    ..Default::default()
                 },
                 network: yarc_runtime::Network::Project,
                 project_net: Some((net.dir().to_path_buf(), net.hosts_path())),
@@ -771,14 +809,18 @@ fn ensure_network(root: &Path, store: &ContainerStore, loaded: &Loaded) -> Resul
         .filter(|c| store.is_supervised(&c.id).unwrap_or(false))
         .collect();
     if current.is_some() || !running.is_empty() {
-        eprintln!("recreating the project network ({})", if current.is_some() { "published ports changed" } else { "its holder is gone" });
+        eprintln!(
+            "recreating the project network ({})",
+            if current.is_some() { "published ports changed" } else { "its holder is gone" }
+        );
         let mut running = running;
         sort_by_service_order(&mut running, &loaded.order, true);
         stop_all(store, &running, &Grace::new(None, Some(&loaded.project)))?;
         yarc_runtime::stop_holder(&net, Duration::from_secs(5))?;
     }
     let pasta = crate::detached::find_pasta();
-    crate::detached::start_holder(root, &loaded.name, &wanted, pasta.as_deref()).context("cannot create the project network")?;
+    crate::detached::start_holder(root, &loaded.name, &wanted, pasta.as_deref())
+        .context("cannot create the project network")?;
     Ok(net)
 }
 
@@ -812,13 +854,20 @@ fn warn_unsupported(loaded: &Loaded) {
 #[cfg(target_os = "linux")]
 fn health_wait(def: &Service) -> Duration {
     let spec = def.health.as_ref().map(|h| yarc_runtime::HealthSpec::shell(&h.cmd, h.interval));
-    Duration::from_secs(120) + spec.map_or(Duration::ZERO, |s| Duration::from_millis(s.interval_ms * u64::from(s.retries)))
+    Duration::from_secs(120)
+        + spec.map_or(Duration::ZERO, |s| Duration::from_millis(s.interval_ms * u64::from(s.retries)))
 }
 
 /// Waits until `container` reports `healthy`. `Ok(false)` means `interrupted`
 /// (Ctrl-C) ended the wait.
 #[cfg(target_os = "linux")]
-fn wait_healthy(store: &ContainerStore, service: &str, container: &str, timeout: Duration, interrupted: &dyn Fn() -> bool) -> Result<bool> {
+fn wait_healthy(
+    store: &ContainerStore,
+    service: &str,
+    container: &str,
+    timeout: Duration,
+    interrupted: &dyn Fn() -> bool,
+) -> Result<bool> {
     use yarc_runtime::{HealthStatus, Status};
 
     let deadline = std::time::Instant::now() + timeout;
@@ -946,7 +995,12 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
     }
 
     let interrupted = interrupt::requested()
-        || stream_logs(&store, sources, &StreamOpts { tail: None, timestamps: false, follow: true }, &interrupt::requested)?;
+        || stream_logs(
+            &store,
+            sources,
+            &StreamOpts { tail: None, timestamps: false, follow: true },
+            &interrupt::requested,
+        )?;
     if interrupted {
         eprintln!("\nGracefully stopping...");
         let mut specs = project_containers(&store, &loaded.name)?;
@@ -990,7 +1044,9 @@ pub fn down(root: &Path, opts: &Opts, timeout: Option<Duration>, volumes: bool) 
     }
     for dir in named_volumes {
         match std::fs::remove_dir_all(&dir) {
-            Ok(()) => eprintln!("project {name}: volume {} removed", dir.file_name().and_then(|n| n.to_str()).unwrap_or("?")),
+            Ok(()) => {
+                eprintln!("project {name}: volume {} removed", dir.file_name().and_then(|n| n.to_str()).unwrap_or("?"))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(anyhow!("cannot remove volume {}: {e}", dir.display())),
         }
@@ -1073,7 +1129,10 @@ mod tests {
     #[test]
     fn stop_timeout_is_the_option_then_the_service_then_ten_seconds() {
         let dir = tempfile::tempdir().unwrap();
-        let loaded = loaded_from(dir.path(), "services:\n  slow:\n    image: i\n    stop_grace_period: 20s\n  fast:\n    image: i\n");
+        let loaded = loaded_from(
+            dir.path(),
+            "services:\n  slow:\n    image: i\n    stop_grace_period: 20s\n  fast:\n    image: i\n",
+        );
         let spec = |service: &str| spec("c", Some(service));
         let grace = Grace::new(None, Some(&loaded.project));
         assert_eq!(grace.for_spec(&spec("slow")), Duration::from_secs(20));
@@ -1122,7 +1181,10 @@ mod tests {
     #[test]
     fn skipped_services_are_explained_with_the_flag_that_brings_them_back() {
         let one = skipped_notes(&[("dash".into(), vec!["observability".into()])]);
-        assert_eq!(one, ["dash: not started, it belongs to profile observability (use --profile observability to include it)"]);
+        assert_eq!(
+            one,
+            ["dash: not started, it belongs to profile observability (use --profile observability to include it)"]
+        );
         let two = skipped_notes(&[("x".into(), vec!["a".into(), "b".into()])]);
         assert_eq!(two, ["x: not started, it belongs to profile a, b (use --profile a or --profile b to include it)"]);
         assert!(skipped_notes(&[]).is_empty());
@@ -1158,11 +1220,22 @@ mod tests {
 
     #[test]
     fn project_name_comes_from_the_option_or_the_directory() {
-        let opts = Opts { file: PathBuf::from("/work/My Shop/yarc.yaml"), name: None, profiles: vec![], env_files: vec![] };
+        let opts =
+            Opts { file: PathBuf::from("/work/My Shop/yarc.yaml"), name: None, profiles: vec![], env_files: vec![] };
         assert_eq!(project_name(&opts).unwrap(), "my-shop");
-        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("custom".into()), profiles: vec![], env_files: vec![] };
+        let opts = Opts {
+            file: PathBuf::from("/work/shop/yarc.yaml"),
+            name: Some("custom".into()),
+            profiles: vec![],
+            env_files: vec![],
+        };
         assert_eq!(project_name(&opts).unwrap(), "custom");
-        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("Bad Name".into()), profiles: vec![], env_files: vec![] };
+        let opts = Opts {
+            file: PathBuf::from("/work/shop/yarc.yaml"),
+            name: Some("Bad Name".into()),
+            profiles: vec![],
+            env_files: vec![],
+        };
         assert!(project_name(&opts).is_err());
     }
 
@@ -1240,7 +1313,8 @@ mod tests {
     #[test]
     fn bad_volumes_are_rejected_with_the_volume_in_the_message() {
         let (base, vols) = (Path::new("/work"), Path::new("/store/volumes"));
-        let err = |s: &str, home: Option<&Path>| resolve_volume(base, vols, "demo", home, &vol(s)).unwrap_err().to_string();
+        let err =
+            |s: &str, home: Option<&Path>| resolve_volume(base, vols, "demo", home, &vol(s)).unwrap_err().to_string();
         assert!(err("./d:/", None).contains("./d:/"), "root as a target");
         assert!(err("./d:/a/../b", None).contains("without '..'"));
         assert!(err("~/x:/d", None).contains("HOME"));
@@ -1255,7 +1329,13 @@ mod tests {
         let p = project(
             "services:\n  a: { image: x, volumes: ['store:/s', './host:/h', 'cache:/c'] }\n  b: { image: x, volumes: ['store:/s2:ro'] }\n",
         );
-        let loaded = Loaded { name: "demo".into(), file: PathBuf::from("/w/yarc.yaml"), order: start_order(&p).unwrap(), project: p, skipped: vec![] };
+        let loaded = Loaded {
+            name: "demo".into(),
+            file: PathBuf::from("/w/yarc.yaml"),
+            order: start_order(&p).unwrap(),
+            project: p,
+            skipped: vec![],
+        };
         let dirs = named_volume_dirs(Path::new("/root"), &loaded);
         assert_eq!(dirs, [Path::new("/root/volumes/demo_cache"), Path::new("/root/volumes/demo_store")]);
     }
@@ -1284,10 +1364,22 @@ mod tests {
         let changed = |yaml: &str| service_hash(&project(yaml).services["app"]);
         assert_ne!(h, changed("services:\n  app: { image: y, env: { A: '1' }, ports: ['80:80'] }\n"), "image");
         assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '2' }, ports: ['80:80'] }\n"), "env");
-        assert_ne!(h, changed("services:\n  app: { image: x, cmd: [true], env: { A: '1' }, ports: ['80:80'] }\n"), "cmd");
-        assert_ne!(h, changed("services:\n  app: { image: x, user: root, env: { A: '1' }, ports: ['80:80'] }\n"), "user");
+        assert_ne!(
+            h,
+            changed("services:\n  app: { image: x, cmd: [true], env: { A: '1' }, ports: ['80:80'] }\n"),
+            "cmd"
+        );
+        assert_ne!(
+            h,
+            changed("services:\n  app: { image: x, user: root, env: { A: '1' }, ports: ['80:80'] }\n"),
+            "user"
+        );
         assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['81:80'] }\n"), "ports");
-        assert_ne!(h, changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['80:80'], volumes: ['v:/d'] }\n"), "volumes");
+        assert_ne!(
+            h,
+            changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['80:80'], volumes: ['v:/d'] }\n"),
+            "volumes"
+        );
         assert_ne!(
             h,
             changed("services:\n  app: { image: x, env: { A: '1' }, ports: ['80:80'], health: { cmd: 'true' } }\n"),
@@ -1310,7 +1402,13 @@ mod tests {
     fn containers_sort_by_service_order_with_orphans_at_the_other_end() {
         let order: Vec<String> = ["db", "api", "web"].iter().map(|s| s.to_string()).collect();
         let ids = |specs: &[ContainerSpec]| specs.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
-        let mut specs = vec![spec("w", Some("web")), spec("o", Some("old")), spec("d", Some("db")), spec("a", Some("api")), spec("u", None)];
+        let mut specs = vec![
+            spec("w", Some("web")),
+            spec("o", Some("old")),
+            spec("d", Some("db")),
+            spec("a", Some("api")),
+            spec("u", None),
+        ];
 
         sort_by_service_order(&mut specs, &order, false);
         assert_eq!(ids(&specs), ["d", "a", "w", "o", "u"], "start order, orphans last");
@@ -1340,8 +1438,12 @@ mod tests {
         std::fs::write(&file, "services:\n  'bad name': { image: x }\n").unwrap();
         assert!(load(&opts).unwrap_err().to_string().contains("invalid service name"));
 
-        std::fs::write(&file, "services:\n  db: { image: pg }\n  web: { image: nginx, needs: { db: started } }\n").unwrap();
+        std::fs::write(&file, "services:\n  db: { image: pg }\n  web: { image: nginx, needs: { db: started } }\n")
+            .unwrap();
         let loaded = load(&opts).unwrap();
-        assert_eq!((loaded.name.as_str(), loaded.order.as_slice()), ("demo", &["db".to_string(), "web".to_string()][..]));
+        assert_eq!(
+            (loaded.name.as_str(), loaded.order.as_slice()),
+            ("demo", &["db".to_string(), "web".to_string()][..])
+        );
     }
 }

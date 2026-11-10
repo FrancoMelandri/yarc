@@ -45,7 +45,7 @@ pub fn plan(cli: &Cli, paths: &Paths) -> Result<Option<Forward>> {
         C::Run(a) => Command::Run { spec: create_spec(&a.create), rm: a.rm, detach: a.detach, debug: a.debug },
         C::Ps(a) => Command::Ps { all: a.all },
         C::Up(a) => Command::Up { detach: a.detach },
-        C::Down(a) => Command::Down { time: Some(a.time), volumes: a.volumes },
+        C::Down(a) => Command::Down { time: a.time, volumes: a.volumes },
         C::Project(ProjectCommand::Ps) => Command::ProjectPs,
         C::Project(ProjectCommand::Logs(a)) => Command::ProjectLogs {
             services: a.services.clone(),
@@ -53,7 +53,7 @@ pub fn plan(cli: &Cli, paths: &Paths) -> Result<Option<Forward>> {
             timestamps: a.timestamps,
             follow: a.follow,
         },
-        C::Project(ProjectCommand::Stop(a)) => Command::ProjectStop { time: Some(a.time) },
+        C::Project(ProjectCommand::Stop(a)) => Command::ProjectStop { time: a.time },
         C::Project(ProjectCommand::Config) => return Ok(None),
         C::Container(c) | C::Direct(c) => container_command(c),
         C::Doctor | C::Agent(_) | C::Shim(_) | C::Holder(_) => return Ok(None),
@@ -63,6 +63,7 @@ pub fn plan(cli: &Cli, paths: &Paths) -> Result<Option<Forward>> {
         // discovery (compose.yaml, ...) must look at the Windows directory, not the translated path
         file: if needs_project { Some(paths.linux(&crate::project::resolve_file(&cli.file))?) } else { None },
         project: cli.project.clone(),
+        profiles: if needs_project { cli.profile.clone() } else { Vec::new() },
     };
     Ok(Some(Forward { globals, command }))
 }
@@ -221,7 +222,7 @@ mod tests {
     fn images_projects_and_defaults() {
         assert_eq!(command(&["pull", "nginx"]), Command::Pull { image: "nginx".into(), jobs: Some(4), platform: None });
         assert_eq!(command(&["image", "rm", "a:1"]), Command::ImageRm { images: vec!["a:1".into()] });
-        assert_eq!(command(&["down", "-v"]), Command::Down { time: Some(10), volumes: true });
+        assert_eq!(command(&["down", "-v"]), Command::Down { time: None, volumes: true });
         assert_eq!(command(&["project", "stop", "-t", "2"]), Command::ProjectStop { time: Some(2) });
         assert_eq!(
             command(&["project", "logs", "web", "-f"]),

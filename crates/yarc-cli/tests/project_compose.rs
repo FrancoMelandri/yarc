@@ -119,3 +119,49 @@ fn a_broken_env_file_is_reported_without_its_contents() {
     assert!(err.contains(".env") && err.contains("line 2"), "{err}");
     assert!(!err.contains("hunter2"), "{err}");
 }
+
+const PROFILED: &str = "\
+services:
+  app:
+    image: app:1
+    secrets: [token]
+    stop_grace_period: 20s
+  dash:
+    image: dash:1
+    profiles: [observability]
+secrets:
+  token:
+    file: ./token.txt
+";
+
+#[test]
+fn profiles_select_services_by_flag_or_environment() {
+    let dir = project("compose.yaml", PROFILED, None);
+    let config = |args: &[&str], envs: &[(&str, &str)]| {
+        let mut full = vec!["-p", "demo"];
+        full.extend_from_slice(args);
+        full.extend_from_slice(&["project", "config"]);
+        let out = run(dir.path(), &full, envs);
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        text(&out.stdout)
+    };
+    let plain = config(&[], &[]);
+    assert!(plain.contains("demo-app-1") && !plain.contains("demo-dash-1"), "{plain}");
+    assert!(plain.contains("stop grace period 20s") && plain.contains("secrets token"), "{plain}");
+
+    let flagged = config(&["--profile", "observability"], &[]);
+    assert!(flagged.contains("demo-dash-1") && flagged.contains("profiles observability"), "{flagged}");
+    assert!(config(&[], &[("COMPOSE_PROFILES", "observability")]).contains("demo-dash-1"));
+    assert!(config(&["--profile", "*"], &[]).contains("demo-dash-1"));
+}
+
+#[test]
+fn a_dependency_in_an_inactive_profile_is_reported() {
+    let yaml = "services:\n  app:\n    image: a\n    depends_on: [dash]\n  dash:\n    image: d\n    profiles: [observability]\n";
+    let dir = project("compose.yaml", yaml, None);
+    let out = run(dir.path(), &["-p", "demo", "project", "config"], &[]);
+    assert!(!out.status.success());
+    let err = text(&out.stderr);
+    assert!(err.contains("inactive profile") && err.contains("--profile"), "{err}");
+    assert!(run(dir.path(), &["-p", "demo", "--profile", "observability", "project", "config"], &[]).status.success());
+}

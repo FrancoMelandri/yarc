@@ -15,6 +15,10 @@ pub struct Cli {
     #[arg(long, global = true, env = "YARC_FILE", value_name = "FILE", default_value = "yarc.yaml")]
     pub file: PathBuf,
 
+    /// Compose profile to activate (repeatable; also COMPOSE_PROFILES, comma separated; `*` is all)
+    #[arg(long = "profile", global = true, env = "COMPOSE_PROFILES", value_delimiter = ',', value_name = "NAME")]
+    pub profile: Vec<String>,
+
     /// Project name [default: the name of the directory holding the project file]
     #[arg(short = 'p', long, global = true, value_name = "NAME")]
     pub project: Option<String>,
@@ -72,9 +76,9 @@ pub struct UpArgs {
 
 #[derive(Debug, Args)]
 pub struct DownArgs {
-    /// Seconds to wait after SIGTERM before sending SIGKILL
-    #[arg(short = 't', long, default_value_t = 10, value_name = "SECONDS")]
-    pub time: u64,
+    /// Seconds to wait after SIGTERM before sending SIGKILL [default: the service's stop_grace_period, else 10]
+    #[arg(short = 't', long, value_name = "SECONDS")]
+    pub time: Option<u64>,
 
     /// Also delete the project's named volumes (their data is lost)
     #[arg(short = 'v', long)]
@@ -83,9 +87,9 @@ pub struct DownArgs {
 
 #[derive(Debug, Args)]
 pub struct StopProjectArgs {
-    /// Seconds to wait after SIGTERM before sending SIGKILL
-    #[arg(short = 't', long, default_value_t = 10, value_name = "SECONDS")]
-    pub time: u64,
+    /// Seconds to wait after SIGTERM before sending SIGKILL [default: the service's stop_grace_period, else 10]
+    #[arg(short = 't', long, value_name = "SECONDS")]
+    pub time: Option<u64>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -529,14 +533,20 @@ mod tests {
         let cli = parse(&["down", "-t", "2", "--file", "y.yaml", "--project", "p2"]).unwrap();
         assert_eq!((cli.file.as_path(), cli.project.as_deref()), (std::path::Path::new("y.yaml"), Some("p2")));
         let Command::Down(a) = cli.command else { panic!() };
-        assert_eq!((a.time, a.volumes), (2, false));
+        assert_eq!((a.time, a.volumes), (Some(2), false));
         let Command::Down(a) = parse(&["down", "-v"]).unwrap().command else { panic!() };
         assert!(a.volumes);
         assert!(parse(&["project", "stop", "-v"]).is_err(), "stop never deletes volumes");
+        // profiles: repeatable, comma separated, global
+        assert_eq!(parse(&["--profile", "a,b", "--profile", "c", "up"]).unwrap().profile, ["a", "b", "c"]);
+        assert_eq!(parse(&["up", "--profile", "a", "--profile", "b"]).unwrap().profile, ["a", "b"]);
+        assert!(parse(&["up"]).unwrap().profile.is_empty());
         assert!(matches!(parse(&["project", "ps"]).unwrap().command, Command::Project(ProjectCommand::Ps)));
         assert!(matches!(parse(&["project", "config"]).unwrap().command, Command::Project(ProjectCommand::Config)));
         let Command::Project(ProjectCommand::Stop(a)) = parse(&["project", "stop"]).unwrap().command else { panic!() };
-        assert_eq!(a.time, 10);
+        assert_eq!(a.time, None);
+        let Command::Down(a) = parse(&["down"]).unwrap().command else { panic!() };
+        assert_eq!(a.time, None);
         let Command::Project(ProjectCommand::Logs(a)) = parse(&["project", "logs", "-f", "-t", "--tail", "5", "web", "db"]).unwrap().command else { panic!() };
         assert!(a.follow && a.timestamps);
         assert_eq!((a.tail, a.services.as_slice()), (Some(5), &["web".to_string(), "db".to_string()][..]));

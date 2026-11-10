@@ -213,7 +213,7 @@ fn healthcheck_problems() {
 
 #[test]
 fn unsupported_keys_are_errors_but_extensions_are_ignored() {
-    for key in ["build: .", "networks: [n]", "restart: always", "secrets: [s]", "profiles: [p]", "stop_grace_period: 5s", "cap_add: [NET_ADMIN]", "deploy: {}"] {
+    for key in ["build: .", "networks: [n]", "restart: always", "cap_add: [NET_ADMIN]", "deploy: {}"] {
         let e = err(&svc(&format!("    {key}")));
         let name = key.split(':').next().unwrap();
         assert_eq!(e, format!("service 'a': unsupported key '{name}'"));
@@ -221,7 +221,7 @@ fn unsupported_keys_are_errors_but_extensions_are_ignored() {
     ok(&svc("    x-yarc: {user: root}\n    x-anything: 1"));
     // top level
     assert_eq!(err("services:\n  a:\n    image: i\nnetworks: {}\n"), "top level: unsupported key 'networks'");
-    assert_eq!(err("services:\n  a:\n    image: i\nsecrets: {}\n"), "top level: unsupported key 'secrets'");
+    assert_eq!(err("services:\n  a:\n    image: i\nconfigs: {}\n"), "top level: unsupported key 'configs'");
     ok("version: \"3.9\"\nx-common: &c {image: i}\nservices:\n  a: *c\n");
 }
 
@@ -277,4 +277,74 @@ volumes:
     assert_eq!(pms.env["JAVA_TOOL_OPTIONS"], "-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8");
     assert_eq!(pms.needs["inspect"], Condition::Started);
     assert_eq!(p.services["dash"].ports[0].host, 18888);
+}
+
+const SECRETS: &str = "services:\n  a:\n    image: i\n    secrets: [tok, tok, key]\nsecrets:\n  tok:\n    file: ./secrets/tok.txt\n  key:\n    file: /abs/key\n";
+
+#[test]
+fn file_secrets_are_listed_once_with_their_files() {
+    let a = &ok(SECRETS).services["a"];
+    assert_eq!(
+        a.secrets,
+        [
+            SecretMount { name: "tok".into(), file: "./secrets/tok.txt".into() },
+            SecretMount { name: "key".into(), file: "/abs/key".into() },
+        ]
+    );
+}
+
+#[test]
+fn secret_problems() {
+    let e = err(&svc("    secrets: [nope]"));
+    assert!(e.contains("'nope' is not declared"), "{e}");
+    let e = err(&svc("    secrets:\n      - {source: s, target: t}"));
+    assert!(e.contains("short form"), "{e}");
+    for (decl, needle) in [
+        ("s:\n    external: true", "unsupported key 'external'"),
+        ("s:\n    environment: X", "unsupported key 'environment'"),
+        ("s: {}", "only file secrets"),
+        ("s:\n    file: ''", "must not be empty"),
+        ("'a b':\n    file: x", "names may only"),
+    ] {
+        let e = err(&format!("services:\n  a:\n    image: i\nsecrets:\n  {decl}\n"));
+        assert!(e.contains(needle), "{decl}: {e}");
+    }
+}
+
+#[test]
+fn profiles_and_stop_grace_period() {
+    let a = &ok(&svc("    profiles: [observability, debug]\n    stop_grace_period: 1m30s")).services["a"];
+    assert_eq!(a.profiles, ["observability", "debug"]);
+    assert_eq!(a.stop_grace_period, Some(Duration::from_secs(90)));
+    assert!(err(&svc("    stop_grace_period: soon")).contains("invalid duration"));
+    assert!(err(&svc("    profiles: [\"bad name\"]")).contains("invalid profile name"));
+}
+
+fn profiled() -> Project {
+    ok("services:\n  web:\n    image: i\n    depends_on: [db]\n  db:\n    image: i\n  dash:\n    image: i\n    profiles: [observability]\n  dbg:\n    image: i\n    profiles: [debug]\n")
+}
+
+fn names(p: &Project) -> Vec<&str> {
+    p.services.keys().map(String::as_str).collect()
+}
+
+#[test]
+fn inactive_profiles_are_dropped() {
+    assert_eq!(names(&profiled().with_profiles(&[]).unwrap()), ["db", "web"]);
+    assert_eq!(names(&profiled().with_profiles(&["observability".into()]).unwrap()), ["dash", "db", "web"]);
+    let both = profiled().with_profiles(&["debug".into(), "observability".into()]).unwrap();
+    assert_eq!(names(&both), ["dash", "db", "dbg", "web"]);
+    assert_eq!(names(&profiled().with_profiles(&["*".into()]).unwrap()).len(), 4);
+    assert_eq!(names(&profiled().with_profiles(&["unknown".into()]).unwrap()), ["db", "web"]);
+}
+
+#[test]
+fn needing_a_service_in_an_inactive_profile_is_an_error() {
+    let p = ok("services:\n  web:\n    image: i\n    depends_on: [dash]\n  dash:\n    image: i\n    profiles: [observability, extra]\n");
+    let e = p.clone().with_profiles(&[]).unwrap_err().to_string();
+    assert_eq!(e, "service 'web' needs 'dash', which is in the inactive profile(s) observability, extra; activate it with --profile");
+    assert!(p.with_profiles(&["extra".into()]).is_ok());
+    // nothing left at all
+    let only = ok("services:\n  a:\n    image: i\n    profiles: [p]\n");
+    assert_eq!(only.with_profiles(&[]).unwrap_err(), ConfigError::NoServices);
 }

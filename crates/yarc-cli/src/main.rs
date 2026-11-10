@@ -46,7 +46,7 @@ fn run() -> Result<u8> {
         Some(r) => r,
         None => root::default_root()?,
     };
-    let opts = project::Opts { file: cli.file, name: cli.project };
+    let opts = project::Opts { file: cli.file, name: cli.project, profiles: cli.profile };
     match cli.command {
         Command::Run(args) => commands::run(&root, args),
         Command::Pull(args) => commands::pull(&root, args).map(|()| 0),
@@ -61,11 +61,11 @@ fn run() -> Result<u8> {
         Command::Agent(_) => agent().map(|()| 0),
         Command::Doctor => Ok(0), // handled before the store is touched
         Command::Up(args) => project::up(&root, &opts, args.detach),
-        Command::Down(args) => project::down(&root, &opts, Duration::from_secs(args.time), args.volumes).map(|()| 0),
+        Command::Down(args) => project::down(&root, &opts, args.time.map(Duration::from_secs), args.volumes).map(|()| 0),
         Command::Project(cmd) => match cmd {
             ProjectCommand::Ps => project::ps(&root, &opts).map(|()| 0),
             ProjectCommand::Logs(args) => project::logs(&root, &opts, args).map(|()| 0),
-            ProjectCommand::Stop(args) => project::stop(&root, &opts, Duration::from_secs(args.time)).map(|()| 0),
+            ProjectCommand::Stop(args) => project::stop(&root, &opts, args.time.map(Duration::from_secs)).map(|()| 0),
             ProjectCommand::Config => project::config(&opts).map(|()| 0),
         },
         Command::Container(cmd) | Command::Direct(cmd) => container(&root, cmd),

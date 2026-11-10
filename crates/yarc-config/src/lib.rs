@@ -43,6 +43,8 @@ pub enum ConfigError {
     Field { service: String, field: String, reason: String },
     #[error("service '{service}': container_name '{name}' collides with another service or container_name")]
     NameCollision { service: String, name: String },
+    #[error("service '{service}' needs '{target}', which is in the inactive profile(s) {profiles}; activate it with --profile")]
+    NeedsInactive { service: String, target: String, profiles: String },
     #[error("project defines no services")]
     NoServices,
 }

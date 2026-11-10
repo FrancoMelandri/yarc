@@ -103,6 +103,7 @@ fn cancel_stops_a_foreground_up_like_ctrl_c() {
         root: Some(root.path().display().to_string()),
         file: Some(file.display().to_string()),
         project: Some("agentlive".into()),
+        ..Default::default()
     };
     let mut a = agent();
 

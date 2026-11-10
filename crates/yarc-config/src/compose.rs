@@ -2,8 +2,9 @@
 //!
 //! Supported per service: `image`, `command`, `entrypoint`, `environment` (list or map),
 //! `ports` (short form), `volumes` (short form), `depends_on` (list or map with
-//! `condition`), `user`, `working_dir`, `healthcheck` (`test`, `interval`) and
-//! `container_name`. Top-level `volumes` may only declare names. `x-...` keys and the
+//! `condition`), `user`, `working_dir`, `healthcheck` (`test`, `interval`),
+//! `container_name`, `secrets` (short form, file secrets), `profiles` and
+//! `stop_grace_period`. Top-level `volumes` may only declare names. `x-...` keys and the
 //! obsolete `version` are ignored; every other key is an error, so nothing is silently
 //! dropped.
 //!
@@ -17,7 +18,7 @@ use serde_yaml_ng::Value;
 
 use crate::interpolate::interpolate;
 use crate::model::{parse_duration, parse_port, parse_volume, DEFAULT_HEALTH_INTERVAL};
-use crate::{validate, Condition, ConfigError, Health, PortMapping, Project, Service, VolumeSource};
+use crate::{validate, Condition, ConfigError, Health, PortMapping, Project, SecretMount, Service, VolumeSource};
 
 #[derive(Debug, Deserialize)]
 struct RawCompose {
@@ -25,6 +26,14 @@ struct RawCompose {
     services: BTreeMap<String, RawService>,
     #[serde(default)]
     volumes: Option<BTreeMap<String, Value>>,
+    secrets: Option<BTreeMap<String, RawSecret>>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawSecret {
+    file: Option<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -44,6 +53,11 @@ struct RawService {
     working_dir: Option<String>,
     healthcheck: Option<RawHealthcheck>,
     container_name: Option<String>,
+    #[serde(default)]
+    secrets: Vec<Value>,
+    #[serde(default)]
+    profiles: Vec<String>,
+    stop_grace_period: Option<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -97,9 +111,24 @@ where
         declared_volumes.push(name);
     }
 
+    let mut secret_files = BTreeMap::new();
+    for (name, secret) in raw.secrets.unwrap_or_default() {
+        if !valid_name(&name) {
+            return Err(field_err("", &format!("secrets.{name}"), "names may only contain letters, digits, '_', '.' and '-'"));
+        }
+        if let Some(key) = secret.extra.keys().next() {
+            return Err(ConfigError::UnsupportedKey { scope: format!("secret '{name}'"), key: key.clone() });
+        }
+        let file = secret.file.ok_or_else(|| field_err("", &format!("secrets.{name}"), "only file secrets are supported (file: PATH)"))?;
+        if file.trim().is_empty() {
+            return Err(field_err("", &format!("secrets.{name}.file"), "must not be empty"));
+        }
+        secret_files.insert(name, file);
+    }
+
     let mut services = BTreeMap::new();
     for (name, svc) in raw.services {
-        services.insert(name.clone(), convert_service(&name, svc, &declared_volumes, lookup)?);
+        services.insert(name.clone(), convert_service(&name, svc, &declared_volumes, &secret_files, lookup)?);
     }
     let project = Project { services };
     validate::validate(&project)?;
@@ -224,6 +253,7 @@ fn convert_service<F>(
     name: &str,
     raw: RawService,
     declared_volumes: &[String],
+    secret_files: &BTreeMap<String, String>,
     lookup: &F,
 ) -> Result<Service, ConfigError>
 where
@@ -270,6 +300,16 @@ where
     let ports = raw.ports.iter().map(|p| convert_port(name, p)).collect::<Result<Vec<_>, _>>()?;
     let volumes = convert_volumes(name, &raw.volumes, declared_volumes)?;
     let needs = convert_depends_on(name, raw.depends_on)?;
+    let secrets = convert_secrets(name, &raw.secrets, secret_files)?;
+    for p in &raw.profiles {
+        if !valid_name(p) {
+            return Err(field_err(name, "profiles", format!("invalid profile name '{p}'")));
+        }
+    }
+    let stop_grace_period = raw
+        .stop_grace_period
+        .map(|s| parse_duration(&s).ok_or_else(|| ConfigError::InvalidDuration { service: name.into(), value: s }))
+        .transpose()?;
     let health = raw.healthcheck.map(|h| convert_health(name, h)).transpose()?.flatten();
 
     Ok(Service {
@@ -278,6 +318,9 @@ where
         entrypoint,
         working_dir: raw.working_dir,
         container_name: raw.container_name,
+        secrets,
+        profiles: raw.profiles,
+        stop_grace_period,
         user,
         env,
         ports,
@@ -392,6 +435,30 @@ fn convert_volumes(
             }
         }
         out.push(mount);
+    }
+    Ok(out)
+}
+
+fn valid_name(n: &str) -> bool {
+    !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+fn convert_secrets(
+    name: &str,
+    refs: &[Value],
+    declared: &BTreeMap<String, String>,
+) -> Result<Vec<SecretMount>, ConfigError> {
+    let mut out: Vec<SecretMount> = Vec::new();
+    for r in refs {
+        let Value::String(secret) = r else {
+            return Err(field_err(name, "secrets", "only the short form (a list of secret names) is supported"));
+        };
+        let file = declared
+            .get(secret)
+            .ok_or_else(|| field_err(name, "secrets", format!("secret '{secret}' is not declared in the top-level secrets")))?;
+        if !out.iter().any(|s| &s.name == secret) {
+            out.push(SecretMount { name: secret.clone(), file: file.clone() });
+        }
     }
     Ok(out)
 }

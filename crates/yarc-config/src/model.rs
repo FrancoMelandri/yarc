@@ -10,6 +10,36 @@ pub struct Project {
     pub services: BTreeMap<String, Service>,
 }
 
+impl Project {
+    /// Keeps the services that have no profile or one of the `active` profiles (`"*"`
+    /// activates all). A service that needs a removed one is an error, so a dependency
+    /// is never silently missing.
+    pub fn with_profiles(mut self, active: &[String]) -> Result<Project, ConfigError> {
+        let all = active.iter().any(|p| p == "*");
+        let enabled = |s: &Service| s.profiles.is_empty() || all || s.profiles.iter().any(|p| active.contains(p));
+        let removed: BTreeMap<String, Vec<String>> = self
+            .services
+            .iter()
+            .filter(|(_, s)| !enabled(s))
+            .map(|(n, s)| (n.clone(), s.profiles.clone()))
+            .collect();
+        self.services.retain(|n, _| !removed.contains_key(n));
+        for (name, svc) in &self.services {
+            if let Some(target) = svc.needs.keys().find(|t| removed.contains_key(*t)) {
+                return Err(ConfigError::NeedsInactive {
+                    service: name.clone(),
+                    target: target.clone(),
+                    profiles: removed[target].join(", "),
+                });
+            }
+        }
+        if self.services.is_empty() {
+            return Err(ConfigError::NoServices);
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Service {
     pub image: String,
@@ -21,6 +51,12 @@ pub struct Service {
     pub working_dir: Option<String>,
     /// Extra name the service answers to inside the project network (compose `container_name`).
     pub container_name: Option<String>,
+    /// File secrets, each mounted read-only at `/run/secrets/<name>`.
+    pub secrets: Vec<SecretMount>,
+    /// Compose profiles; the service only runs when one of them is active (empty: always).
+    pub profiles: Vec<String>,
+    /// How long `down` / `stop` wait after SIGTERM when `-t` is not given.
+    pub stop_grace_period: Option<Duration>,
     /// Replaces the image's `USER` (name or `uid[:gid]`); `None` keeps it.
     pub user: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -28,6 +64,13 @@ pub struct Service {
     pub volumes: Vec<VolumeMount>,
     pub health: Option<Health>,
     pub needs: BTreeMap<String, Condition>,
+}
+
+/// A file secret: `file` is the host path as written (relative to the project file).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretMount {
+    pub name: String,
+    pub file: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -167,6 +210,9 @@ impl RawService {
             entrypoint: None,
             working_dir: None,
             container_name: None,
+            secrets: Vec::new(),
+            profiles: Vec::new(),
+            stop_grace_period: None,
             user,
             env: self.env,
             ports,

@@ -27,6 +27,8 @@ const MAX_CONTAINER_NAME: usize = 64;
 pub struct Opts {
     pub file: PathBuf,
     pub name: Option<String>,
+    /// Active compose profiles.
+    pub profiles: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -217,7 +219,42 @@ fn prepare_volumes(root: &Path, loaded: &Loaded, def: &Service) -> Result<Vec<ya
         }
         specs.push(spec);
     }
+    for (secret, source) in secret_files(loaded, def)? {
+        specs.push(yarc_runtime::VolumeSpec { source, target: format!("/run/secrets/{}", secret.name), read_only: true });
+    }
     Ok(specs)
+}
+
+/// The host file of each of the service's secrets (relative to the project file's
+/// directory, `~` allowed). A missing file is an error naming the secret.
+#[cfg(target_os = "linux")]
+fn secret_files<'a>(loaded: &Loaded, def: &'a Service) -> Result<Vec<(&'a yarc_config::SecretMount, PathBuf)>> {
+    let base = loaded.file.parent().unwrap_or(Path::new("."));
+    let mut out = Vec::new();
+    for secret in &def.secrets {
+        let path = match secret.file.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME")
+                .map(|h| PathBuf::from(h).join(rest))
+                .ok_or_else(|| anyhow!("secret '{}': cannot expand '~' without HOME", secret.name))?,
+            None if Path::new(&secret.file).is_absolute() => PathBuf::from(&secret.file),
+            None => base.join(&secret.file),
+        };
+        let path = clean_path(&path);
+        if !path.is_file() {
+            bail!("secret '{}': file {} does not exist (or is not a regular file)", secret.name, path.display());
+        }
+        out.push((secret, path));
+    }
+    Ok(out)
+}
+
+/// Fails before anything is created when a secret file is missing.
+#[cfg(target_os = "linux")]
+fn check_secrets(loaded: &Loaded) -> Result<()> {
+    for name in &loaded.order {
+        secret_files(loaded, &loaded.project.services[name]).with_context(|| format!("service '{name}'"))?;
+    }
+    Ok(())
 }
 
 /// Host directories of the project's named volumes (what `down -v` deletes).
@@ -253,6 +290,9 @@ pub fn service_hash(service: &Service) -> String {
     }
     if let Some(dir) = &service.working_dir {
         canonical.push_str(&format!("|workdir:{dir}"));
+    }
+    if !service.secrets.is_empty() {
+        canonical.push_str(&format!("|secrets:{:?}", service.secrets));
     }
     Digest::of(canonical.as_bytes()).hex().to_string()
 }
@@ -348,11 +388,11 @@ fn parse_project_file(file: &Path, text: &str) -> Result<Project> {
 
 pub fn load(opts: &Opts) -> Result<Loaded> {
     let requested = resolve_file(&opts.file);
-    let opts = &Opts { file: requested, name: opts.name.clone() };
+    let opts = &Opts { file: requested, ..opts.clone() };
     let name = project_name(opts)?;
     let file = std::path::absolute(&opts.file).with_context(|| format!("cannot resolve {}", opts.file.display()))?;
     let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read {}", file.display()))?;
-    let project = parse_project_file(&file, &text)?;
+    let project = parse_project_file(&file, &text)?.with_profiles(&opts.profiles).with_context(|| file.display().to_string())?;
     if project.services.is_empty() {
         bail!("{} defines no services", file.display());
     }
@@ -400,6 +440,16 @@ pub fn config(opts: &Opts) -> Result<()> {
         println!("  {name:<width$}  {}  image {}{needs}", container_name(&loaded.name, name), svc.image);
         if let Some(alias) = &svc.container_name {
             println!("  {:<width$}  also known as {alias}", "");
+        }
+        if !svc.profiles.is_empty() {
+            println!("  {:<width$}  profiles {}", "", svc.profiles.join(", "));
+        }
+        if let Some(grace) = svc.stop_grace_period {
+            println!("  {:<width$}  stop grace period {}s", "", grace.as_secs());
+        }
+        if !svc.secrets.is_empty() {
+            let names: Vec<&str> = svc.secrets.iter().map(|s| s.name.as_str()).collect();
+            println!("  {:<width$}  secrets {}", "", names.join(", "));
         }
         if let Some(user) = &svc.user {
             println!("  {:<width$}  user {user}", "");
@@ -594,7 +644,7 @@ fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Lo
 
     if let Action::Recreate = action {
         eprintln!("{service}: definition changed, recreating {cname}");
-        yarc_runtime::stop_container(store, &cname, Duration::from_secs(10))?;
+        yarc_runtime::stop_container(store, &cname, def.stop_grace_period.unwrap_or(DEFAULT_STOP_TIMEOUT))?;
         yarc_runtime::remove_container(store, &cname, true)?;
     }
     if matches!(action, Action::Create | Action::Recreate) {
@@ -660,7 +710,7 @@ fn ensure_network(root: &Path, store: &ContainerStore, loaded: &Loaded) -> Resul
         eprintln!("recreating the project network ({})", if current.is_some() { "published ports changed" } else { "its holder is gone" });
         let mut running = running;
         sort_by_service_order(&mut running, &loaded.order, true);
-        stop_all(store, &running, Duration::from_secs(10))?;
+        stop_all(store, &running, &Grace::new(None, Some(&loaded.project)))?;
         yarc_runtime::stop_holder(&net, Duration::from_secs(5))?;
     }
     let pasta = crate::detached::find_pasta();
@@ -739,10 +789,38 @@ fn wait_healthy(store: &ContainerStore, service: &str, container: &str, timeout:
     }
 }
 
+const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long to wait after SIGTERM: the `-t` option if given, else the service's
+/// `stop_grace_period`, else 10 seconds (also for containers of removed services).
 #[cfg(target_os = "linux")]
-fn stop_all(store: &ContainerStore, specs: &[ContainerSpec], timeout: Duration) -> Result<()> {
+struct Grace {
+    explicit: Option<Duration>,
+    per_service: BTreeMap<String, Duration>,
+}
+
+#[cfg(target_os = "linux")]
+impl Grace {
+    fn new(explicit: Option<Duration>, project: Option<&Project>) -> Self {
+        let per_service = project
+            .into_iter()
+            .flat_map(|p| p.services.iter())
+            .filter_map(|(n, s)| s.stop_grace_period.map(|g| (n.clone(), g)))
+            .collect();
+        Grace { explicit, per_service }
+    }
+
+    fn for_spec(&self, spec: &ContainerSpec) -> Duration {
+        self.explicit
+            .or_else(|| spec.labels.get(LABEL_SERVICE).and_then(|s| self.per_service.get(s)).copied())
+            .unwrap_or(DEFAULT_STOP_TIMEOUT)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn stop_all(store: &ContainerStore, specs: &[ContainerSpec], grace: &Grace) -> Result<()> {
     for spec in specs {
-        yarc_runtime::stop_container(store, &spec.id, timeout)?;
+        yarc_runtime::stop_container(store, &spec.id, grace.for_spec(spec))?;
         eprintln!("{}: stopped", spec.id);
     }
     Ok(())
@@ -754,6 +832,7 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
     let loaded = load(opts)?;
     let store = ContainerStore::open(root)?;
     warn_unsupported(&loaded);
+    check_secrets(&loaded)?;
     if !detach {
         interrupt::install();
     }
@@ -805,7 +884,7 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
         eprintln!("\nGracefully stopping...");
         let mut specs = project_containers(&store, &loaded.name)?;
         sort_by_service_order(&mut specs, &loaded.order, true);
-        stop_all(&store, &specs, Duration::from_secs(10))?;
+        stop_all(&store, &specs, &Grace::new(None, Some(&loaded.project)))?;
         return Ok(130);
     }
     Ok(0)
@@ -814,7 +893,7 @@ pub fn up(root: &Path, opts: &Opts, detach: bool) -> Result<u8> {
 /// `yarc down`: stops and removes every container of the project, dependents
 /// first, including containers of services that were removed from the file.
 #[cfg(target_os = "linux")]
-pub fn down(root: &Path, opts: &Opts, timeout: Duration, volumes: bool) -> Result<()> {
+pub fn down(root: &Path, opts: &Opts, timeout: Option<Duration>, volumes: bool) -> Result<()> {
     let name = project_name(opts)?;
     // Read the file first: without it we could not tell which volumes are ours.
     let named_volumes = if volumes {
@@ -826,12 +905,13 @@ pub fn down(root: &Path, opts: &Opts, timeout: Duration, volumes: bool) -> Resul
     let store = ContainerStore::open(root)?;
     let mut specs = project_containers(&store, &name)?;
     sort_by_service_order(&mut specs, &shutdown_order(opts), true);
+    let grace = Grace::new(timeout, load(opts).ok().as_ref().map(|l| &l.project));
     let net = ProjectNet::new(root, &name)?;
     if specs.is_empty() && !net.dir().exists() {
         eprintln!("project {name}: nothing to remove");
     }
     for spec in &specs {
-        yarc_runtime::stop_container(&store, &spec.id, timeout)?;
+        yarc_runtime::stop_container(&store, &spec.id, grace.for_spec(spec))?;
         yarc_runtime::remove_container(&store, &spec.id, true)?;
         eprintln!("{}: stopped and removed", spec.id);
     }
@@ -853,12 +933,12 @@ pub fn down(root: &Path, opts: &Opts, timeout: Duration, volumes: bool) -> Resul
 
 /// `yarc project stop`: like `down` but keeps the containers.
 #[cfg(target_os = "linux")]
-pub fn stop(root: &Path, opts: &Opts, timeout: Duration) -> Result<()> {
+pub fn stop(root: &Path, opts: &Opts, timeout: Option<Duration>) -> Result<()> {
     let name = project_name(opts)?;
     let store = ContainerStore::open(root)?;
     let mut specs = project_containers(&store, &name)?;
     sort_by_service_order(&mut specs, &shutdown_order(opts), true);
-    stop_all(&store, &specs, timeout)
+    stop_all(&store, &specs, &Grace::new(timeout, load(opts).ok().as_ref().map(|l| &l.project)))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -875,10 +955,10 @@ mod unsupported {
     pub fn up(_root: &Path, _opts: &Opts, _detach: bool) -> Result<u8> {
         anyhow::bail!(MSG)
     }
-    pub fn down(_root: &Path, _opts: &Opts, _timeout: Duration, _volumes: bool) -> Result<()> {
+    pub fn down(_root: &Path, _opts: &Opts, _timeout: Option<Duration>, _volumes: bool) -> Result<()> {
         anyhow::bail!(MSG)
     }
-    pub fn stop(_root: &Path, _opts: &Opts, _timeout: Duration) -> Result<()> {
+    pub fn stop(_root: &Path, _opts: &Opts, _timeout: Option<Duration>) -> Result<()> {
         anyhow::bail!(MSG)
     }
 }
@@ -891,6 +971,64 @@ mod tests {
 
     fn project(yaml: &str) -> Project {
         yarc_config::parse(yaml).unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn loaded_from(dir: &Path, yaml: &str) -> Loaded {
+        let file = dir.join("docker-compose.yml");
+        std::fs::write(&file, yaml).unwrap();
+        load(&Opts { file, name: Some("demo".into()), profiles: vec![] }).unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn secret_files_resolve_against_the_project_dir_and_must_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("secrets")).unwrap();
+        std::fs::write(dir.path().join("secrets/tok.txt"), "x").unwrap();
+        let yaml = "services:\n  a:\n    image: i\n    secrets: [tok]\nsecrets:\n  tok:\n    file: ./secrets/tok.txt\n";
+        let loaded = loaded_from(dir.path(), yaml);
+        let found = secret_files(&loaded, &loaded.project.services["a"]).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0.name, "tok");
+        assert_eq!(found[0].1, dir.path().join("secrets/tok.txt"));
+        check_secrets(&loaded).unwrap();
+
+        std::fs::remove_file(dir.path().join("secrets/tok.txt")).unwrap();
+        let err = format!("{:#}", check_secrets(&loaded).unwrap_err());
+        assert!(err.contains("service 'a'") && err.contains("secret 'tok'") && err.contains("does not exist"), "{err}");
+        // a directory is not a secret file
+        std::fs::create_dir(dir.path().join("secrets/tok.txt")).unwrap();
+        assert!(check_secrets(&loaded).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stop_timeout_is_the_option_then_the_service_then_ten_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let loaded = loaded_from(dir.path(), "services:\n  slow:\n    image: i\n    stop_grace_period: 20s\n  fast:\n    image: i\n");
+        let spec = |service: &str| spec("c", Some(service));
+        let grace = Grace::new(None, Some(&loaded.project));
+        assert_eq!(grace.for_spec(&spec("slow")), Duration::from_secs(20));
+        assert_eq!(grace.for_spec(&spec("fast")), Duration::from_secs(10));
+        assert_eq!(grace.for_spec(&spec("removed-service")), Duration::from_secs(10));
+        let forced = Grace::new(Some(Duration::from_secs(3)), Some(&loaded.project));
+        assert_eq!(forced.for_spec(&spec("slow")), Duration::from_secs(3));
+        assert_eq!(Grace::new(None, None).for_spec(&spec("slow")), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_hash_covers_secrets_but_not_profiles_or_grace() {
+        let base = "services:\n  a:\n    image: i\n";
+        let h = |extra: &str, top: &str| {
+            let y = format!("{base}{extra}{top}");
+            service_hash(&yarc_config::parse_compose(&y, &|_: &str| None).unwrap().services["a"])
+        };
+        let plain = h("", "");
+        assert_eq!(plain, h("    profiles: [p]\n    stop_grace_period: 5s\n", ""));
+        let with = h("    secrets: [s]\n", "secrets:\n  s:\n    file: ./f\n");
+        assert_ne!(plain, with);
+        assert_ne!(with, h("    secrets: [s]\n", "secrets:\n  s:\n    file: ./other\n"));
     }
 
     #[test]
@@ -923,11 +1061,11 @@ mod tests {
 
     #[test]
     fn project_name_comes_from_the_option_or_the_directory() {
-        let opts = Opts { file: PathBuf::from("/work/My Shop/yarc.yaml"), name: None };
+        let opts = Opts { file: PathBuf::from("/work/My Shop/yarc.yaml"), name: None, profiles: vec![] };
         assert_eq!(project_name(&opts).unwrap(), "my-shop");
-        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("custom".into()) };
+        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("custom".into()), profiles: vec![] };
         assert_eq!(project_name(&opts).unwrap(), "custom");
-        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("Bad Name".into()) };
+        let opts = Opts { file: PathBuf::from("/work/shop/yarc.yaml"), name: Some("Bad Name".into()), profiles: vec![] };
         assert!(project_name(&opts).is_err());
     }
 
@@ -1095,7 +1233,7 @@ mod tests {
     fn loading_checks_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("yarc.yaml");
-        let opts = Opts { file: file.clone(), name: Some("demo".into()) };
+        let opts = Opts { file: file.clone(), name: Some("demo".into()), profiles: vec![] };
         assert!(load(&opts).unwrap_err().to_string().contains("cannot read"));
 
         std::fs::write(&file, "services: {}\n").unwrap();

@@ -63,6 +63,9 @@ pub struct Globals {
     /// Project name.
     #[serde(default)]
     pub project: Option<String>,
+    /// Active compose profiles (`--profile`, repeatable).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<String>,
 }
 
 /// Everything `create` and `run` need.

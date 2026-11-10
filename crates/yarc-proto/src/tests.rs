@@ -61,7 +61,7 @@ fn golden_wire_format() {
     assert_eq!(
         json(&ClientFrame::Request {
             id: 2,
-            globals: Globals { root: None, file: Some("/p/yarc.yaml".into()), project: Some("demo".into()) },
+            globals: Globals { root: None, file: Some("/p/yarc.yaml".into()), project: Some("demo".into()), profiles: vec![] },
             command: Command::Up { detach: true },
         }),
         r#"{"type":"request","id":2,"globals":{"root":null,"file":"/p/yarc.yaml","project":"demo"},"command":{"type":"up","detach":true}}"#

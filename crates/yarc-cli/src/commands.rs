@@ -147,6 +147,7 @@ pub fn create(root: &Path, args: crate::cli::CreateArgs) -> Result<()> {
 /// `yarc run`: create, start in the foreground, and with `--rm` delete the
 /// container afterwards (whether or not it started). Returns yarc's exit code.
 pub fn run(root: &Path, args: crate::cli::RunArgs) -> Result<u8> {
+    check_restart_options(&args)?;
     let id = create_container(root, args.create)?;
     if args.detach {
         // The shim removes the container itself when `--rm` is given and it exits.
@@ -168,6 +169,21 @@ pub fn run(root: &Path, args: crate::cli::RunArgs) -> Result<u8> {
     started
 }
 
+/// A restart policy is carried out by the detached supervisor, and a container that removes
+/// itself on exit cannot be restarted.
+fn check_restart_options(args: &crate::cli::RunArgs) -> Result<()> {
+    if args.create.restart.is_no() {
+        return Ok(());
+    }
+    if !args.detach {
+        anyhow::bail!("--restart needs --detach: only a detached container is supervised across restarts");
+    }
+    if args.rm {
+        anyhow::bail!("--restart cannot be combined with --rm");
+    }
+    Ok(())
+}
+
 /// Everything needed to create one container, whoever asks (`create`, `run`, `up`).
 #[cfg(unix)]
 pub struct NewContainer {
@@ -181,6 +197,7 @@ pub struct NewContainer {
     /// join the project's network (overriding `network`).
     pub project_net: Option<(std::path::PathBuf, std::path::PathBuf)>,
     pub volumes: Vec<yarc_runtime::VolumeSpec>,
+    pub restart: yarc_runtime::RestartPolicy,
 }
 
 #[cfg(unix)]
@@ -202,6 +219,7 @@ fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
             health: None,
             project_net: None,
             volumes: Vec::new(),
+            restart: args.restart,
         },
     )
 }
@@ -238,7 +256,8 @@ pub fn create_new(root: &Path, new: NewContainer) -> Result<String> {
         let mut spec = ContainerSpec::new(&id, &new.image, rootfs.clone(), process, new.network)
             .with_labels(new.labels)
             .with_health(new.health)
-            .with_volumes(new.volumes);
+            .with_volumes(new.volumes)
+            .with_restart(new.restart);
         if let Some((dir, hosts)) = new.project_net {
             spec = spec.in_project_network(dir, hosts);
         }
@@ -263,7 +282,7 @@ pub fn container_ls(root: &Path, all: bool) -> Result<()> {
     println!("{:<14} {:<24} {:<12} COMMAND", "CONTAINER ID", "IMAGE", "STATUS");
     for c in containers.list()? {
         let status = containers.status_text(&c.id)?;
-        if all || status.starts_with("Running") {
+        if all || status.starts_with("Running") || status.starts_with("Restarting") {
             println!("{:<14} {:<24} {:<12} {}", c.id, c.image, status, c.args.join(" "));
         }
     }

@@ -172,11 +172,23 @@ impl From<String> for Fail {
 
 static TARGET: AtomicI32 = AtomicI32::new(0);
 static SIGNALS: AtomicU32 = AtomicU32::new(0);
+/// Termination signals this process has received since [`reset_received`], whether or not
+/// a container was there to forward them to. A restarting supervisor treats one as a stop.
+static RECEIVED: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn reset_received() {
+    RECEIVED.store(0, Ordering::SeqCst);
+}
+
+pub(crate) fn termination_received() -> bool {
+    RECEIVED.load(Ordering::SeqCst) > 0
+}
 
 /// Forwards termination signals to the container. PID 1 of a namespace ignores
 /// signals it has no handler for, so a second one escalates to SIGKILL
 /// (otherwise Ctrl-C could not stop e.g. `sleep`).
 extern "C" fn forward(sig: i32) {
+    RECEIVED.fetch_add(1, Ordering::SeqCst);
     let target = TARGET.load(Ordering::SeqCst);
     if target <= 0 {
         return;
@@ -187,10 +199,10 @@ extern "C" fn forward(sig: i32) {
 }
 
 /// Installs the forwarding handlers; restores the default ones on drop.
-struct SignalGuard(Vec<(Signal, SigAction)>);
+pub(crate) struct SignalGuard(Vec<(Signal, SigAction)>);
 
 impl SignalGuard {
-    fn install() -> Self {
+    pub(crate) fn install() -> Self {
         SIGNALS.store(0, Ordering::SeqCst);
         let action = SigAction::new(SigHandler::Handler(forward), SaFlags::SA_RESTART, SigSet::empty());
         let old = FORWARDED

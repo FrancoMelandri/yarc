@@ -92,16 +92,30 @@ pub fn start(_root: &Path, _id: &str, _debug: bool, _rm: bool) -> Result<()> {
     anyhow::bail!("running containers needs Linux; run yarc inside WSL")
 }
 
+/// Delay between restarts: 1 s doubling to 60 s. The hidden `YARC_RESTART_BACKOFF_MS`
+/// replaces the initial delay (and scales the cap and the reset), for tests.
+#[cfg(target_os = "linux")]
+fn restart_backoff() -> yarc_runtime::Backoff {
+    use std::time::Duration;
+    match std::env::var("YARC_RESTART_BACKOFF_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        Some(ms) if ms > 0 => yarc_runtime::Backoff::with_initial(Duration::from_millis(ms)),
+        _ => yarc_runtime::Backoff::default(),
+    }
+}
+
 /// Entry point of the hidden `__shim` command.
 #[cfg(target_os = "linux")]
 pub fn shim(root: &Path, args: ShimArgs) -> Result<()> {
     use std::cell::Cell;
     use std::io::{self, Write};
 
-    use yarc_runtime::{run_recorded_with, ContainerStore, Launch};
+    use yarc_runtime::{supervise, ContainerStore, Launch};
 
     let containers = ContainerStore::open(root)?;
     let spec = containers.load(&args.id)?;
+    if args.rm && !spec.restart.is_no() {
+        anyhow::bail!("container {} has a restart policy ({}) and cannot be removed on exit", args.id, spec.restart);
+    }
 
     let reported = Cell::new(false);
     let report = |line: String| {
@@ -113,7 +127,7 @@ pub fn shim(root: &Path, args: ShimArgs) -> Result<()> {
     };
 
     let launch = Launch { debug: args.debug, detached: true };
-    let result = run_recorded_with(&containers, &spec, &launch, |started| {
+    let result = supervise(&containers, &spec, &launch, restart_backoff(), |started| {
         report(match started {
             Ok(pid) => format!("started {pid}"),
             Err(RuntimeError::Start { msg, code }) => format!("error {code} {msg}"),

@@ -73,6 +73,7 @@ fn create_opts(a: Args, s: &CreateSpec) -> Args {
         .opt("--workdir", s.workdir.as_deref())
         .opt("--user", s.user.as_deref())
         .opt("--network", s.network.as_deref())
+        .opt("--restart", s.restart.as_deref())
 }
 
 fn create_positionals(a: Args, s: &CreateSpec) -> Args {
@@ -254,6 +255,20 @@ mod tests {
         );
         assert_eq!(args(Command::Ps { all: true }), ["ps", "--all"]);
         assert_eq!(args(Command::ContainerLs), ["container", "ls"]);
+    }
+
+    #[test]
+    fn a_restart_policy_reaches_the_command_line_only_when_set() {
+        let run = |restart: Option<&str>| {
+            let spec = CreateSpec { restart: restart.map(String::from), ..spec("alpine", &["true"]) };
+            args(Command::Run { spec, rm: false, detach: true, debug: false })
+        };
+        assert!(!run(None).iter().any(|a| a.starts_with("--restart")), "{:?}", run(None));
+        let with = run(Some("on-failure:3"));
+        assert!(with.contains(&"--restart=on-failure:3".to_string()), "{with:?}");
+        // before the image, so it can never be taken for part of the container's command
+        let at = with.iter().position(|a| a.starts_with("--restart")).unwrap();
+        assert!(at < with.iter().position(|a| a == "alpine").unwrap());
     }
 
     #[test]

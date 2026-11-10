@@ -4,7 +4,7 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::OwnedFd;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
 use nix::sys::signal::{kill, Signal};
@@ -17,6 +17,7 @@ use crate::health::HealthTracker;
 use crate::linux::start;
 use crate::logs::LogWriter;
 use crate::pump::{pump, pump_with_tick, Tee, Tick};
+use crate::restart::{Backoff, Decision, RestartTracker, RunEnd};
 use crate::spec::{ContainerSpec, HealthSpec};
 use crate::state::{now_ms, ContainerState};
 use crate::StartOptions;
@@ -49,7 +50,30 @@ pub fn run_recorded_with(
     let Some(_lock) = store.try_acquire(&spec.id)? else {
         return Err(RuntimeError::AlreadyRunning(spec.id.clone()));
     };
+    let ended = run_once(store, spec, launch, 0, on_started)?;
+    store.save_state(&spec.id, &ended.live.exited(ended.code, now_ms()))?;
+    Ok(ended.code)
+}
 
+/// One run of the container, as seen by its supervisor.
+struct Ended {
+    code: i32,
+    /// The state recorded while it ran; the caller decides what comes next (exited, or
+    /// waiting to be restarted) and records that.
+    live: ContainerState,
+}
+
+/// Starts the container and waits for it, recording its output and `running` state (with
+/// `restarts` restarts so far). The caller must hold the container's lock. A start failure
+/// is recorded as an exit here (and reported through `on_started`) because the CLI reads it
+/// as soon as it has been told.
+fn run_once(
+    store: &ContainerStore,
+    spec: &ContainerSpec,
+    launch: &Launch,
+    restarts: u32,
+    on_started: impl FnOnce(std::result::Result<u32, &RuntimeError>),
+) -> Result<Ended> {
     let log_path = store.log_path(&spec.id);
     let log_file = OpenOptions::new()
         .create(true)
@@ -66,7 +90,7 @@ pub fn run_recorded_with(
 
     let me = std::process::id();
     let started = now_ms();
-    let starting = ContainerState::running(me, None, started);
+    let starting = ContainerState::running(me, None, started).with_restarts(restarts);
     store.save_state(&spec.id, &starting)?;
 
     let opts = StartOptions {
@@ -88,7 +112,7 @@ pub fn run_recorded_with(
         }
     };
 
-    let live = ContainerState::running(me, Some(running.pid()), started);
+    let live = ContainerState::running(me, Some(running.pid()), started).with_restarts(restarts);
     let mut health = spec.health.clone().map(|h| HealthRunner::new(store, spec, running.pid(), live.clone(), h));
     let first = health.as_ref().map_or_else(|| live.clone(), HealthRunner::snapshot);
     if let Err(err) = store.save_state(&spec.id, &first) {
@@ -117,11 +141,109 @@ pub fn run_recorded_with(
     }
     let code = running.wait();
 
-    store.save_state(&spec.id, &live.exited(code, now_ms()))?;
     if let Err(err) = pumped {
         eprintln!("warning: output of {} was not fully recorded: {err}", spec.id);
     }
-    Ok(code)
+    Ok(Ended { code, live })
+}
+
+/// True when the container should not be run again: a person asked for it to stop, or this
+/// process was told to terminate.
+fn stop_wanted(store: &ContainerStore, id: &str) -> bool {
+    store.stop_requested(id) || crate::linux::termination_received()
+}
+
+/// How often a waiting supervisor looks for a stop request.
+const STOP_POLL: Duration = Duration::from_millis(100);
+
+/// Waits `after` before the next run. Returns `false` when it should not happen: a stop was
+/// requested, or the container was removed meanwhile.
+fn wait_to_restart(store: &ContainerStore, id: &str, after: Duration) -> bool {
+    let deadline = Instant::now() + after;
+    loop {
+        if stop_wanted(store, id) || !store.config_path(id).exists() {
+            return false;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        std::thread::sleep(left.min(STOP_POLL));
+    }
+}
+
+/// Runs the container under its restart policy until the policy says to stop; returns the
+/// last exit status. The container's lock is taken once and held throughout, so it never
+/// looks stopped between runs. With `RestartPolicy::No` this is a single [`run_once`].
+///
+/// `on_started` reports the first start only. A start failure on the first run is an error
+/// (no restart loop on a typo); on later runs it counts as a failed run.
+pub fn supervise(
+    store: &ContainerStore,
+    spec: &ContainerSpec,
+    launch: &Launch,
+    backoff: Backoff,
+    on_started: impl FnOnce(std::result::Result<u32, &RuntimeError>),
+) -> Result<i32> {
+    let id = spec.id.as_str();
+    let Some(_lock) = store.try_acquire(id)? else {
+        return Err(RuntimeError::AlreadyRunning(id.to_string()));
+    };
+    store.clear_stop_request(id); // left over from an earlier life
+    crate::linux::reset_received();
+    // Keep the termination handlers installed between runs too: a signal then must count
+    // as a stop, not kill the supervisor with the container's state half written.
+    let _signals = crate::linux::SignalGuard::install();
+
+    let mut tracker = RestartTracker::new(spec.restart, backoff);
+    let mut report = Some(on_started);
+    let mut performed = 0u32;
+    loop {
+        let began = Instant::now();
+        let first = report.take();
+        let ended = run_once(store, spec, launch, performed, |started| {
+            if let Ok(pid) = started {
+                // A stop that arrived after the last check but before this start: pass it on.
+                if stop_wanted(store, id) {
+                    let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+                }
+            }
+            if let Some(report) = first {
+                report(started);
+            }
+        });
+        let (code, base) = match ended {
+            Ok(e) => (e.code, e.live),
+            Err(RuntimeError::Start { code, msg }) if performed > 0 => {
+                eprintln!("restart of {id} failed: {msg}");
+                let base = store.load_state(id)?.unwrap_or_else(|| ContainerState::running(std::process::id(), None, now_ms()));
+                (code, base.with_restarts(performed))
+            }
+            Err(e) => return Err(e),
+        };
+
+        let end = RunEnd { exit_code: code, ran_for: began.elapsed(), stop_requested: stop_wanted(store, id) };
+        let after = match tracker.on_exit(end) {
+            Decision::Stop => {
+                store.clear_stop_request(id);
+                store.save_state(id, &base.exited(code, now_ms()))?;
+                return Ok(code);
+            }
+            Decision::Restart { after } => after,
+        };
+
+        let now = now_ms();
+        eprintln!("restart {} of {id} after exit {code}, in {after:?}", performed + 1);
+        store.save_state(id, &base.restarting(code, now, now + after.as_millis() as u64))?;
+        if !wait_to_restart(store, id, after) {
+            store.clear_stop_request(id);
+            if store.config_path(id).exists() {
+                store.save_state(id, &base.exited(code, now_ms()))?;
+            }
+            return Ok(code);
+        }
+        performed += 1;
+    }
 }
 
 /// How often the supervisor looks at the health checks.
@@ -227,7 +349,13 @@ pub fn exec_container(
 /// Sends `sig` (a signal number) to the container's init process. Signals from
 /// the host reach PID 1 of the container only if it has a handler for them;
 /// SIGKILL and SIGSTOP always do.
+///
+/// SIGTERM and SIGKILL also record a stop request first, so a supervisor with a restart
+/// policy lets the container stay down (`stop`, `rm -f` and `kill` all end up here).
 pub fn signal_container(store: &ContainerStore, id: &str, sig: i32) -> Result<()> {
+    if sig == Signal::SIGTERM as i32 || sig == Signal::SIGKILL as i32 {
+        store.request_stop(id)?;
+    }
     let pid = running_pid(store, id)?;
     let signal = Signal::try_from(sig).map_err(|_| RuntimeError::Unsupported(format!("invalid signal number {sig}")))?;
     match kill(Pid::from_raw(pid as i32), signal) {
@@ -242,7 +370,9 @@ pub fn signal_container(store: &ContainerStore, id: &str, sig: i32) -> Result<()
 pub fn stop_container(store: &ContainerStore, id: &str, timeout: Duration) -> Result<()> {
     match signal_container(store, id, Signal::SIGTERM as i32) {
         Ok(()) => {}
-        Err(RuntimeError::NotRunning(_)) => return Ok(()),
+        // Not running: either gone, or between two runs (waiting to restart), when there is
+        // no process to signal and the stop request alone ends it. Wait covers both.
+        Err(RuntimeError::NotRunning(_)) => {}
         Err(e) => return Err(e),
     }
     if store.wait_exit(id, Some(timeout))? {
@@ -280,4 +410,108 @@ pub fn remove_container(store: &ContainerStore, id: &str, force: bool) -> Result
         return Err(RuntimeError::StillRunning(id.to_string()));
     };
     store.remove(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{Network, Process};
+
+    fn store_with(id: &str) -> (tempfile::TempDir, ContainerStore) {
+        let root = tempfile::tempdir().unwrap();
+        let store = ContainerStore::open(root.path()).unwrap();
+        store.allocate(Some(id)).unwrap();
+        let p = Process { args: vec!["x".into()], env: vec![], working_dir: "/".into(), user: None };
+        store.save(&ContainerSpec::new(id, "img", store.rootfs_path(id), p, Network::Host)).unwrap();
+        (root, store)
+    }
+
+    #[test]
+    fn the_wait_before_a_restart_runs_its_course() {
+        let (_r, store) = store_with("c");
+        let t = Instant::now();
+        assert!(wait_to_restart(&store, "c", Duration::from_millis(150)));
+        assert!(t.elapsed() >= Duration::from_millis(150));
+        assert!(wait_to_restart(&store, "c", Duration::ZERO));
+    }
+
+    #[test]
+    fn a_stop_request_ends_the_wait_at_once() {
+        let (_r, store) = store_with("c");
+        let _lock = store.try_acquire("c").unwrap().unwrap(); // supervised, as in real life
+        store.request_stop("c").unwrap();
+        let t = Instant::now();
+        assert!(!wait_to_restart(&store, "c", Duration::from_secs(60)));
+        assert!(t.elapsed() < Duration::from_secs(1));
+
+        // ... also when it arrives while waiting
+        store.clear_stop_request("c");
+        let s2 = store.clone();
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            s2.request_stop("c").unwrap();
+        });
+        let t = Instant::now();
+        assert!(!wait_to_restart(&store, "c", Duration::from_secs(60)));
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        setter.join().unwrap();
+    }
+
+    #[test]
+    fn removing_the_container_ends_the_wait() {
+        let (_r, store) = store_with("c");
+        let s2 = store.clone();
+        let remover = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            s2.remove("c").unwrap();
+        });
+        let t = Instant::now();
+        assert!(!wait_to_restart(&store, "c", Duration::from_secs(60)));
+        assert!(t.elapsed() < Duration::from_secs(2));
+        remover.join().unwrap();
+    }
+
+    #[test]
+    fn only_term_and_kill_record_a_stop_request() {
+        let (_r, store) = store_with("c");
+        let _lock = store.try_acquire("c").unwrap().unwrap();
+        // not running (no state): the signal fails, but a request is still recorded for TERM/KILL
+        for (sig, recorded) in [
+            (Signal::SIGUSR1, false),
+            (Signal::SIGHUP, false),
+            (Signal::SIGTERM, true),
+        ] {
+            store.clear_stop_request("c");
+            assert!(matches!(signal_container(&store, "c", sig as i32), Err(RuntimeError::NotRunning(_))));
+            assert_eq!(store.stop_requested("c"), recorded, "{sig:?}");
+        }
+        store.clear_stop_request("c");
+        let _ = signal_container(&store, "c", Signal::SIGKILL as i32);
+        assert!(store.stop_requested("c"));
+    }
+
+    #[test]
+    fn stopping_a_container_nobody_supervises_succeeds_and_leaves_no_request() {
+        let (_r, store) = store_with("c");
+        stop_container(&store, "c", Duration::from_secs(1)).unwrap();
+        assert!(!store.stop_requested("c"));
+        assert!(matches!(stop_container(&store, "nope", Duration::from_secs(1)), Err(RuntimeError::NotFound(_))));
+    }
+
+    #[test]
+    fn stopping_a_container_between_two_runs_waits_for_the_supervisor_to_leave() {
+        let (_r, store) = store_with("c");
+        let lock = store.try_acquire("c").unwrap().unwrap(); // the supervisor, waiting to restart
+        let s2 = store.clone();
+        let supervisor = std::thread::spawn(move || {
+            // what `supervise` does: notice the request, give up the lock
+            assert!(!wait_to_restart(&s2, "c", Duration::from_secs(60)));
+            drop(lock);
+        });
+        let t = Instant::now();
+        stop_container(&store, "c", Duration::from_secs(5)).unwrap();
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        assert!(!store.is_supervised("c").unwrap());
+        supervisor.join().unwrap();
+    }
 }

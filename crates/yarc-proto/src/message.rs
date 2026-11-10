@@ -85,6 +85,9 @@ pub struct CreateSpec {
     /// `host` or `none`.
     #[serde(default)]
     pub network: Option<String>,
+    /// Restart policy text (`always`, `on-failure:3`, ...); absent: `no`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<String>,
     #[serde(default)]
     pub cmd: Vec<String>,
 }

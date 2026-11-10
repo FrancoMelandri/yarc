@@ -85,6 +85,7 @@ fn create_spec(a: &cli::CreateArgs) -> CreateSpec {
             }
             .to_string(),
         ),
+        restart: (!a.restart.is_no()).then(|| a.restart.to_string()),
         cmd: a.cmd.clone(),
     }
 }
@@ -188,6 +189,7 @@ mod tests {
                     workdir: Some("/x".into()),
                     user: Some("root".into()),
                     network: Some("none".into()),
+                    restart: None,
                     cmd: vec!["sh".into(), "-c".into(), "echo hi".into()],
                 },
                 rm: true,
@@ -196,6 +198,9 @@ mod tests {
             }
         );
         assert!(matches!(command(&["create", "alpine"]), Command::Create(s) if s.network.as_deref() == Some("host")));
+        // a restart policy is forwarded as text; the default is not sent at all
+        assert!(matches!(command(&["create", "alpine"]), Command::Create(s) if s.restart.is_none()));
+        assert!(matches!(command(&["run", "-d", "--restart", "on-failure:3", "alpine"]), Command::Run { spec, .. } if spec.restart.as_deref() == Some("on-failure:3")));
     }
 
     #[test]

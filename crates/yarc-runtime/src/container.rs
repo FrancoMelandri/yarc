@@ -127,6 +127,32 @@ impl ContainerStore {
         }
     }
 
+    pub fn stop_request_path(&self, id: &str) -> PathBuf {
+        self.container_dir(id).join("stop-requested")
+    }
+
+    /// Records that a person asked for the container to stop (`stop`, `down`, `rm -f`,
+    /// `kill` with TERM/KILL), so its supervisor does not restart it. Only written while
+    /// the container is supervised: stopping one that is not running leaves nothing behind.
+    /// A stale file is harmless: every supervisor clears it when it starts.
+    pub fn request_stop(&self, id: &str) -> Result<()> {
+        if self.is_supervised(id)? {
+            let path = self.stop_request_path(id);
+            fs::write(&path, b"").map_err(io_err(format!("cannot write {}", path.display())))?;
+        }
+        Ok(())
+    }
+
+    pub fn stop_requested(&self, id: &str) -> bool {
+        check_id(id).is_ok() && self.stop_request_path(id).exists()
+    }
+
+    pub fn clear_stop_request(&self, id: &str) {
+        if check_id(id).is_ok() {
+            let _ = fs::remove_file(self.stop_request_path(id));
+        }
+    }
+
     /// Waits until nobody supervises the container any more (it has exited, or
     /// is dead). Returns `false` if `timeout` ran out first; `None` waits forever.
     pub fn wait_exit(&self, id: &str, timeout: Option<Duration>) -> Result<bool> {
@@ -239,6 +265,35 @@ mod tests {
         store.save(&s).unwrap();
         assert_eq!(store.load(&id).unwrap(), s);
         assert!(!store.config_path(&id).with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn a_stop_request_is_recorded_only_while_the_container_is_supervised() {
+        let (_r, store) = store();
+        let id = store.allocate(Some("c")).unwrap();
+        store.save(&spec(&store, &id)).unwrap();
+
+        // nobody supervises it: stopping it leaves nothing behind
+        store.request_stop(&id).unwrap();
+        assert!(!store.stop_requested(&id));
+
+        let lock = store.try_acquire(&id).unwrap().unwrap();
+        store.request_stop(&id).unwrap();
+        assert!(store.stop_requested(&id));
+        assert!(store.stop_request_path(&id).starts_with(store.container_dir(&id)));
+        store.clear_stop_request(&id);
+        assert!(!store.stop_requested(&id));
+        store.clear_stop_request(&id); // clearing twice is fine
+        drop(lock);
+    }
+
+    #[test]
+    fn stop_requests_for_unknown_or_hostile_ids() {
+        let (_r, store) = store();
+        assert!(matches!(store.request_stop("nope"), Err(RuntimeError::NotFound(_))));
+        assert!(matches!(store.request_stop("../x"), Err(RuntimeError::NotFound(_))));
+        assert!(!store.stop_requested("../x"));
+        store.clear_stop_request("../x"); // must not touch anything outside the store
     }
 
     #[test]

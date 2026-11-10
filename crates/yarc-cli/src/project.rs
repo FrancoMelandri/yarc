@@ -494,7 +494,7 @@ pub fn ps(root: &Path, opts: &Opts) -> Result<()> {
             .and_then(|l| l.project.services.get(service))
             .map(|s| format_ports(&s.ports))
             .unwrap_or_default();
-        println!("{:<16} {:<28} {:<22} {:<24} {}", service, spec.id, store.status_text(&spec.id)?, spec.image, ports);
+        println!("{:<16} {:<28} {:<28} {:<24} {}", service, spec.id, store.status_text(&spec.id)?, spec.image, ports);
     }
     Ok(())
 }
@@ -666,6 +666,7 @@ fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Lo
                 volumes,
                 labels: labels(project, service, &hash),
                 health: def.health.as_ref().map(|h| yarc_runtime::HealthSpec::shell(&h.cmd, h.interval)),
+                restart: yarc_runtime::RestartPolicy::No,
             },
         )?;
     }

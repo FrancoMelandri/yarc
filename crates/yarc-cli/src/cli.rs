@@ -201,6 +201,11 @@ pub struct CreateArgs {
     #[arg(long, value_name = "MODE", default_value = "host")]
     pub network: yarc_runtime::Network,
 
+    /// What to do when the container exits: no, always, unless-stopped, on-failure[:N]
+    /// (needs `run -d`; a restart is never done after `stop`, `down`, `rm -f` or `kill`)
+    #[arg(long, value_name = "POLICY", default_value = "no")]
+    pub restart: yarc_runtime::RestartPolicy,
+
     /// Image reference; pulled automatically when missing
     pub image: String,
 
@@ -422,6 +427,24 @@ mod tests {
         assert!(a.cmd.is_empty() && a.env.is_empty());
         assert_eq!(a.network, yarc_runtime::Network::Host);
         assert_eq!((a.name, a.entrypoint, a.workdir, a.user), (None, None, None, None));
+        assert!(a.restart.is_no());
+    }
+
+    #[test]
+    fn restart_policies_are_parsed_and_checked_by_the_parser() {
+        use yarc_runtime::RestartPolicy;
+        let policy = |p: &str| {
+            let Command::Run(a) = parse(&["run", "-d", "--restart", p, "alpine"]).unwrap().command else { panic!() };
+            a.create.restart
+        };
+        assert_eq!(policy("always"), RestartPolicy::Always);
+        assert_eq!(policy("unless-stopped"), RestartPolicy::UnlessStopped);
+        assert_eq!(policy("on-failure:3"), RestartPolicy::OnFailure { max: Some(3) });
+        let err = parse(&["run", "--restart", "sometimes", "alpine"]).unwrap_err().to_string();
+        assert!(err.contains("invalid restart policy 'sometimes'"), "{err}");
+        assert!(parse(&["create", "--restart", "on-failure:0", "alpine"]).is_err());
+        let Command::Create(a) = parse(&["create", "--restart=always", "alpine", "true"]).unwrap().command else { panic!() };
+        assert_eq!((a.restart, a.cmd.as_slice()), (RestartPolicy::Always, &["true".to_string()][..]));
     }
 
     #[test]

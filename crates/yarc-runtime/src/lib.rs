@@ -17,6 +17,7 @@ mod exec;
 mod health;
 #[cfg(target_os = "linux")]
 mod lifecycle;
+mod limits;
 #[cfg(target_os = "linux")]
 mod linux;
 mod logs;
@@ -41,6 +42,10 @@ pub use error::{Result, RuntimeError};
 pub use lifecycle::{
     exec_container, remove_container, run_recorded, run_recorded_with, signal_container, stop_container, supervise,
     Launch,
+};
+pub use limits::{
+    check_host, host_cpus, in_scope, oom_kills, prefer_as_oom_victim, require_scopes, scope_args, scope_command,
+    SCOPE_MARKER,
 };
 #[cfg(target_os = "linux")]
 pub use linux::{process_alive, start, Running};

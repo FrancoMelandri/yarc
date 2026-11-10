@@ -60,6 +60,13 @@ pub struct ContainerState {
     /// pid; `exit_code` / `finished_ms` describe the run that just ended).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_restart_ms: Option<u64>,
+    /// The run that ended was killed by the kernel for exceeding its memory limit.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub oom_killed: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -78,7 +85,13 @@ impl ContainerState {
             health: None,
             restarts: 0,
             next_restart_ms: None,
+            oom_killed: false,
         }
+    }
+
+    /// The run ended because the kernel killed it for exceeding its memory limit.
+    pub fn with_oom_killed(&self, oom_killed: bool) -> Self {
+        ContainerState { oom_killed, ..self.clone() }
     }
 
     /// The same state with the restart count carried over from the earlier runs.
@@ -133,10 +146,15 @@ pub fn describe(state: Option<&ContainerState>, supervised: bool) -> String {
 pub fn describe_at(state: Option<&ContainerState>, supervised: bool, now_ms: u64) -> String {
     match state {
         None => "Created".into(),
-        Some(s) if s.status == Status::Exited => format!("Exited ({})", s.exit_code.unwrap_or(-1)),
+        Some(s) if s.status == Status::Exited => {
+            format!("Exited ({}){}", s.exit_code.unwrap_or(-1), if s.oom_killed { " OOM killed" } else { "" })
+        }
         Some(s) if s.is_running(supervised) => {
             if let Some(next) = s.next_restart_ms {
-                let exit = s.exit_code.map_or(String::new(), |c| format!("exit {c}"));
+                let mut exit = s.exit_code.map_or(String::new(), |c| format!("exit {c}"));
+                if s.oom_killed {
+                    exit.push_str(", OOM killed");
+                }
                 return match next.saturating_sub(now_ms) {
                     0 => format!("Restarting ({exit})"),
                     ms => format!("Restarting ({exit}, in {}s)", ms.div_ceil(1000)),
@@ -186,6 +204,20 @@ mod tests {
         assert_eq!(describe(Some(&run), false), "Dead");
         assert_eq!(describe(Some(&run.exited(3, 1)), false), "Exited (3)");
         assert_eq!(describe(Some(&run.exited(3, 1)), true), "Exited (3)");
+    }
+
+    #[test]
+    fn an_oom_kill_is_shown_and_only_recorded_when_it_happened() {
+        let run = ContainerState::running(10, Some(11), 0);
+        assert!(!serde_json::to_string(&run.exited(1, 1)).unwrap().contains("oom"));
+        let killed = run.with_oom_killed(true).exited(137, 1);
+        assert_eq!(describe(Some(&killed), false), "Exited (137) OOM killed");
+        assert!(serde_json::to_string(&killed).unwrap().contains("\"oom_killed\":true"));
+        let waiting = run.with_oom_killed(true).restarting(137, 1_000, 5_000);
+        assert_eq!(describe_at(Some(&waiting), true, 1_000), "Restarting (exit 137, OOM killed, in 4s)");
+        // a state written before limits existed still loads
+        let old = r#"{"status":"exited","supervisor_pid":1,"pid":2,"started_ms":0,"finished_ms":1,"exit_code":3}"#;
+        assert!(!serde_json::from_str::<ContainerState>(old).unwrap().oom_killed);
     }
 
     #[test]

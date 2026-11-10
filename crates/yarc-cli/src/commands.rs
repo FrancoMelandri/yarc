@@ -314,9 +314,30 @@ pub fn container_start(root: &Path, args: crate::cli::StartArgs) -> Result<u8> {
             eprintln!("  {op:?}");
         }
     }
+    if !spec.resources.is_unset() && !yarc_runtime::in_scope() {
+        return restart_in_scope(root, &spec, args.debug);
+    }
     let launch = yarc_runtime::Launch { debug: args.debug, detached: false };
     let code = yarc_runtime::run_recorded(&containers, &spec, &launch)?;
     Ok((code & 0xff) as u8)
+}
+
+/// A foreground container with limits runs in a systemd scope that carries them: this process
+/// is replaced by the same `container start` inside the scope (same terminal, same exit code).
+#[cfg(target_os = "linux")]
+fn restart_in_scope(root: &Path, spec: &yarc_runtime::ContainerSpec, debug: bool) -> Result<u8> {
+    use anyhow::Context;
+    use std::os::unix::process::CommandExt;
+
+    yarc_runtime::check_host(&spec.resources, yarc_runtime::host_cpus())?;
+    yarc_runtime::require_scopes()?;
+    let exe = std::env::current_exe().context("cannot locate the yarc executable")?;
+    let mut cmd = yarc_runtime::scope_command(&spec.resources, &exe);
+    cmd.arg("--root").arg(root).args(["container", "start"]).arg(&spec.id);
+    if debug {
+        cmd.arg("--debug");
+    }
+    Err(anyhow::Error::new(cmd.exec()).context("cannot enter the limits scope"))
 }
 
 /// Prints a container's recorded output: stdout lines to stdout, stderr lines

@@ -146,7 +146,7 @@ pub fn parse_memory_swap(text: &str) -> Result<u64, ResourceError> {
     Ok(bytes)
 }
 
-/// A CPU count such as `0.5`, `1` or `2.25`, in thousandths (the precision kept).
+/// A CPU count such as `0.5`, `1` or `2.25` (at least 0.01), in thousandths (the precision kept).
 pub fn parse_cpus(text: &str) -> Result<u32, ResourceError> {
     let t = text.trim();
     let invalid = || err("cpus", format!("invalid value '{text}': expected a number such as 0.5 or 2"));
@@ -155,8 +155,9 @@ pub fn parse_cpus(text: &str) -> Result<u32, ResourceError> {
     }
     let value: f64 = t.parse().map_err(|_| invalid())?;
     let millis = (value * 1000.0).round();
-    if millis < 1.0 {
-        return Err(err("cpus", format!("'{text}' must be at least 0.001")));
+    // cgroups need at least 1 ms of CPU per 100 ms period
+    if millis < 10.0 {
+        return Err(err("cpus", format!("'{text}' must be at least 0.01")));
     }
     if millis > u32::MAX as f64 {
         return Err(err("cpus", format!("'{text}' is too large")));
@@ -186,7 +187,8 @@ pub fn format_size(bytes: u64) -> String {
     bytes.to_string()
 }
 
-fn format_cpus(millis: u32) -> String {
+/// `500` -> `0.5`, `2000` -> `2`.
+pub fn format_cpus(millis: u32) -> String {
     let text = format!("{}.{:03}", millis / 1000, millis % 1000);
     text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
@@ -229,8 +231,8 @@ mod tests {
         assert_eq!(parse_cpus("0.5").unwrap(), 500);
         assert_eq!(parse_cpus("1").unwrap(), 1000);
         assert_eq!(parse_cpus("2.25").unwrap(), 2250);
-        assert_eq!(parse_cpus("0.001").unwrap(), 1);
-        for bad in ["", "0", "0.0004", "-1", "abc", "1e3", ".5", "1.", "99999999"] {
+        assert_eq!(parse_cpus("0.01").unwrap(), 10);
+        for bad in ["", "0", "0.0004", "0.009", "-1", "abc", "1e3", ".5", "1.", "99999999"] {
             assert_eq!(parse_cpus(bad).unwrap_err().field, "cpus", "{bad}");
         }
     }

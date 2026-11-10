@@ -150,3 +150,23 @@ fn restart_in_yarc_yaml() {
     assert_eq!(parse("services:\n  a:\n    image: x\n").unwrap().services["a"].restart, RestartPolicy::No);
     assert!(policy("often").unwrap_err().to_string().contains("service 'a': restart: invalid restart policy 'often'"));
 }
+
+#[test]
+fn resources_in_yarc_yaml() {
+    let r = |res: &str| {
+        parse(&format!("services:\n  a:\n    image: x\n    resources: {res}\n")).map(|p| p.services["a"].resources)
+    };
+    let ok = r("{ memory: 512m, memory_swap: 1g, cpus: 0.5, pids: 100 }").unwrap();
+    assert_eq!(
+        (ok.memory, ok.memory_swap, ok.cpus_millis, ok.pids),
+        (Some(512 << 20), Some(1 << 30), Some(500), Some(100))
+    );
+    assert_eq!(r("{ memory: 67108864 }").unwrap().memory, Some(64 << 20));
+    assert!(parse("services:\n  a:\n    image: x\n").unwrap().services["a"].resources.is_unset());
+    assert!(r("{ cpu_shares: 2 }").is_err());
+    let e = r("{ memory: 1k }").unwrap_err().to_string();
+    assert!(e.contains("service 'a': resources.memory: '1k' is too small"), "{e}");
+    let e = r("{ cpus: 0 }").unwrap_err().to_string();
+    assert!(e.contains("resources.cpus"), "{e}");
+    assert!(r("{ memory_swap: 1g }").unwrap_err().to_string().contains("resources.memory_swap: needs a memory limit"));
+}

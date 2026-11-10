@@ -41,9 +41,10 @@ pub fn plan(cli: &Cli, paths: &Paths) -> Result<Option<Forward>> {
         C::Image(ImageCommand::Ls) => Command::ImageLs,
         C::Image(ImageCommand::Rm(a)) => Command::ImageRm { images: a.images.clone() },
         C::Image(ImageCommand::Unpack(a)) => Command::ImageUnpack { image: a.image.clone(), dir: paths.linux(&a.dir)? },
-        C::Create(a) => Command::Create(create_spec(a)),
-        C::Run(a) => Command::Run { spec: create_spec(&a.create), rm: a.rm, detach: a.detach, debug: a.debug },
+        C::Create(a) => Command::Create(create_spec(a)?),
+        C::Run(a) => Command::Run { spec: create_spec(&a.create)?, rm: a.rm, detach: a.detach, debug: a.debug },
         C::Ps(a) => Command::Ps { all: a.all },
+        C::Stats(a) => Command::Stats { ids: a.ids.clone() },
         C::Up(a) => Command::Up { detach: a.detach },
         C::Down(a) => Command::Down { time: a.time, volumes: a.volumes },
         C::Project(ProjectCommand::Ps) => Command::ProjectPs,
@@ -73,8 +74,10 @@ pub fn plan(cli: &Cli, paths: &Paths) -> Result<Option<Forward>> {
     Ok(Some(Forward { globals, command }))
 }
 
-fn create_spec(a: &cli::CreateArgs) -> CreateSpec {
-    CreateSpec {
+/// A bad combination of limits is reported here, before the agent is bothered.
+fn create_spec(a: &cli::CreateArgs) -> Result<CreateSpec> {
+    a.resources().map_err(anyhow::Error::msg)?;
+    Ok(CreateSpec {
         image: a.image.clone(),
         name: a.name.clone(),
         env: a.env.clone(),
@@ -91,8 +94,12 @@ fn create_spec(a: &cli::CreateArgs) -> CreateSpec {
             .to_string(),
         ),
         restart: (!a.restart.is_no()).then(|| a.restart.to_string()),
+        memory: a.memory.map(|n| n.to_string()),
+        memory_swap: a.memory_swap.map(|n| n.to_string()),
+        cpus: a.cpus.map(yarc_config::format_cpus),
+        pids_limit: a.pids_limit.map(|n| n.to_string()),
         cmd: a.cmd.clone(),
-    }
+    })
 }
 
 fn container_command(c: &ContainerCommand) -> Command {
@@ -236,6 +243,10 @@ mod tests {
                     user: Some("root".into()),
                     network: Some("none".into()),
                     restart: None,
+                    memory: None,
+                    memory_swap: None,
+                    cpus: None,
+                    pids_limit: None,
                     cmd: vec!["sh".into(), "-c".into(), "echo hi".into()],
                 },
                 rm: true,
@@ -252,6 +263,21 @@ mod tests {
     }
 
     #[test]
+    fn limits_are_forwarded_as_text_and_only_when_set() {
+        assert!(matches!(command(&["create", "alpine"]), Command::Create(s)
+            if (&s.memory, &s.memory_swap, &s.cpus, &s.pids_limit) == (&None, &None, &None, &None)));
+        let run =
+            command(&["run", "-m", "1.5g", "--memory-swap", "2g", "--cpus", "2.5", "--pids-limit", "50", "alpine"]);
+        let Command::Run { spec, .. } = run else { panic!() };
+        assert_eq!(spec.memory.as_deref(), Some("1610612736"));
+        assert_eq!(spec.memory_swap.as_deref(), Some("2147483648"));
+        assert_eq!((spec.cpus.as_deref(), spec.pids_limit.as_deref()), (Some("2.5"), Some("50")));
+        // the text survives the agent's own parser
+        assert_eq!(yarc_config::parse_memory(spec.memory.as_deref().unwrap()).unwrap(), 3 << 29);
+        assert_eq!(yarc_config::parse_cpus(spec.cpus.as_deref().unwrap()).unwrap(), 2500);
+    }
+
+    #[test]
     fn container_commands_with_and_without_the_container_prefix() {
         let expected = Command::Stop { ids: vec!["a".into(), "b".into()], time: Some(3) };
         assert_eq!(command(&["stop", "-t", "3", "a", "b"]), expected);
@@ -260,6 +286,7 @@ mod tests {
         assert_eq!(command(&["rm", "-f", "a"]), Command::Rm { ids: vec!["a".into()], force: true });
         assert_eq!(command(&["wait", "a"]), Command::Wait { ids: vec!["a".into()] });
         assert_eq!(command(&["container", "ls"]), Command::ContainerLs);
+        assert_eq!(command(&["stats", "a"]), Command::Stats { ids: vec!["a".into()] });
         assert_eq!(
             command(&["logs", "--tail", "5", "-t", "-f", "a"]),
             Command::Logs { id: "a".into(), tail: Some(5), timestamps: true, follow: true }

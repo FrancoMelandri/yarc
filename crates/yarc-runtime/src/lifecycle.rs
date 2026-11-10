@@ -99,6 +99,7 @@ fn run_once(
         stdout: Some(OwnedFd::from(out_w)),
         stderr: Some(OwnedFd::from(err_w)),
     };
+    let oom_before = if spec.resources.memory.is_some() { crate::limits::oom_kills() } else { None };
     let running = match start(spec, opts) {
         Ok(running) => running,
         Err(err) => {
@@ -112,6 +113,9 @@ fn run_once(
         }
     };
 
+    if spec.resources.memory.is_some() && crate::limits::in_scope() {
+        crate::limits::prefer_as_oom_victim(running.pid());
+    }
     let live = ContainerState::running(me, Some(running.pid()), started).with_restarts(restarts);
     let mut health = spec.health.clone().map(|h| HealthRunner::new(store, spec, running.pid(), live.clone(), h));
     let first = health.as_ref().map_or_else(|| live.clone(), HealthRunner::snapshot);
@@ -144,7 +148,9 @@ fn run_once(
     if let Err(err) = pumped {
         eprintln!("warning: output of {} was not fully recorded: {err}", spec.id);
     }
-    Ok(Ended { code, live })
+    // The scope's counter only grows (it spans every run of a restarted container).
+    let oom_killed = matches!((oom_before, crate::limits::oom_kills()), (Some(before), Some(after)) if after > before);
+    Ok(Ended { code, live: live.with_oom_killed(oom_killed) })
 }
 
 /// True when the container should not be run again: a person asked for it to stop, or this

@@ -198,10 +198,12 @@ pub struct NewContainer {
     pub project_net: Option<(std::path::PathBuf, std::path::PathBuf)>,
     pub volumes: Vec<yarc_runtime::VolumeSpec>,
     pub restart: yarc_runtime::RestartPolicy,
+    pub resources: yarc_config::Resources,
 }
 
 #[cfg(unix)]
 fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
+    let resources = args.resources().map_err(anyhow::Error::msg)?;
     create_new(
         root,
         NewContainer {
@@ -220,6 +222,7 @@ fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
             project_net: None,
             volumes: Vec::new(),
             restart: args.restart,
+            resources,
         },
     )
 }
@@ -257,7 +260,8 @@ pub fn create_new(root: &Path, new: NewContainer) -> Result<String> {
             .with_labels(new.labels)
             .with_health(new.health)
             .with_volumes(new.volumes)
-            .with_restart(new.restart);
+            .with_restart(new.restart)
+            .with_resources(new.resources);
         if let Some((dir, hosts)) = new.project_net {
             spec = spec.in_project_network(dir, hosts);
         }
@@ -290,6 +294,73 @@ pub fn container_ls(root: &Path, all: bool) -> Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
+pub fn stats(_root: &Path, _args: crate::cli::StatsArgs) -> Result<()> {
+    anyhow::bail!("stats needs Linux; run yarc inside WSL")
+}
+
+/// One-shot use of running containers that have limits: the CPU is the share of one CPU used
+/// over a one second sample. Only a container with limits has a cgroup of its own to measure.
+#[cfg(target_os = "linux")]
+pub fn stats(root: &Path, args: crate::cli::StatsArgs) -> Result<()> {
+    use std::time::{Duration, Instant};
+
+    let containers = yarc_runtime::ContainerStore::open(root)?;
+    let explicit = !args.ids.is_empty();
+    let specs = if explicit {
+        args.ids.iter().map(|id| containers.load(id)).collect::<std::result::Result<Vec<_>, _>>()?
+    } else {
+        containers.list()?
+    };
+
+    let mut sampled = Vec::new();
+    for spec in specs {
+        let skip = |why: &str| {
+            if explicit {
+                eprintln!("{}: {why}", spec.id);
+            }
+        };
+        if spec.resources.is_unset() {
+            skip("has no limits, so there is nothing to measure");
+            continue;
+        }
+        let pid = containers.load_state(&spec.id)?.and_then(|s| s.supervisor_pid);
+        let running = containers.status_text(&spec.id)?.starts_with("Running");
+        let first = pid.filter(|_| running).and_then(yarc_runtime::scope_usage);
+        match (pid, first) {
+            (Some(pid), Some(first)) => sampled.push((spec, pid, first)),
+            _ => skip("is not running"),
+        }
+    }
+
+    let began = Instant::now();
+    if !sampled.is_empty() {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    let elapsed = began.elapsed().as_micros().max(1) as f64;
+    let mut rows = Vec::new();
+    for (spec, pid, first) in sampled {
+        let Some(now) = yarc_runtime::scope_usage(pid) else { continue }; // it exited meanwhile
+        let cpu = now.cpu_usec.saturating_sub(first.cpu_usec) as f64 / elapsed * 100.0;
+        let (limit, percent) = match now.memory_max {
+            Some(max) => (human_bytes(max), format!("{:.1}%", now.memory_current as f64 / max as f64 * 100.0)),
+            None => ("-".to_string(), "-".to_string()),
+        };
+        let usage = format!("{} / {limit}", human_bytes(now.memory_current));
+        rows.push((spec.id, format!("{cpu:.1}%"), usage, percent, now.pids_current.to_string()));
+    }
+    let width = rows.iter().map(|r| r.0.len()).max().unwrap_or(0).max("CONTAINER ID".len());
+    let usage_width = rows.iter().map(|r| r.2.len()).max().unwrap_or(0).max("MEM USAGE / LIMIT".len());
+    println!(
+        "{:<width$}  {:>7}  {:>usage_width$}  {:>7}  {:>6}",
+        "CONTAINER ID", "CPU %", "MEM USAGE / LIMIT", "MEM %", "PIDS"
+    );
+    for (id, cpu, usage, percent, pids) in rows {
+        println!("{id:<width$}  {cpu:>7}  {usage:>usage_width$}  {percent:>7}  {pids:>6}");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
 pub fn container_start(_root: &Path, _args: crate::cli::StartArgs) -> Result<u8> {
     anyhow::bail!("running containers needs Linux; run yarc inside WSL")
 }
@@ -314,9 +385,34 @@ pub fn container_start(root: &Path, args: crate::cli::StartArgs) -> Result<u8> {
             eprintln!("  {op:?}");
         }
     }
+    if !spec.resources.is_unset() && !yarc_runtime::in_scope() {
+        return restart_in_scope(root, &spec, args.debug);
+    }
     let launch = yarc_runtime::Launch { debug: args.debug, detached: false };
     let code = yarc_runtime::run_recorded(&containers, &spec, &launch)?;
     Ok((code & 0xff) as u8)
+}
+
+/// A foreground container with limits runs in a systemd scope that carries them: the same
+/// `container start` runs inside the scope as a child (same terminal), and its exit code is
+/// ours. A child, not an `exec`, so that what the caller does afterwards (`run --rm` removing
+/// the container) still happens.
+#[cfg(target_os = "linux")]
+fn restart_in_scope(root: &Path, spec: &yarc_runtime::ContainerSpec, debug: bool) -> Result<u8> {
+    use anyhow::Context;
+    use std::os::unix::process::ExitStatusExt;
+
+    yarc_runtime::check_host(&spec.resources, yarc_runtime::host_cpus())?;
+    yarc_runtime::require_scopes()?;
+    let exe = std::env::current_exe().context("cannot locate the yarc executable")?;
+    let mut cmd = yarc_runtime::scope_command(&spec.resources, &exe);
+    cmd.arg("--root").arg(root).args(["container", "start"]).arg(&spec.id);
+    if debug {
+        cmd.arg("--debug");
+    }
+    let status = cmd.status().context("cannot enter the limits scope")?;
+    // killed by a signal: the shell's convention
+    Ok(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)) as u8)
 }
 
 /// Prints a container's recorded output: stdout lines to stdout, stderr lines

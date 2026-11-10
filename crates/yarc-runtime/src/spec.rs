@@ -8,7 +8,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, RuntimeError};
-use yarc_config::RestartPolicy;
+use yarc_config::{Resources, RestartPolicy};
 
 /// Used when neither the image nor the user sets `PATH` (same as Docker).
 pub const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -182,9 +182,17 @@ pub struct ContainerSpec {
     /// What the supervisor does when the container exits (detached containers only).
     #[serde(default, skip_serializing_if = "RestartPolicy::is_no")]
     pub restart: RestartPolicy,
+    /// CPU and memory limits; absent in `config.json` when there are none.
+    #[serde(default, skip_serializing_if = "Resources::is_unset")]
+    pub resources: Resources,
 }
 
 impl ContainerSpec {
+    pub fn with_resources(mut self, resources: Resources) -> Self {
+        self.resources = resources;
+        self
+    }
+
     pub fn with_restart(mut self, restart: RestartPolicy) -> Self {
         self.restart = restart;
         self
@@ -230,6 +238,7 @@ impl ContainerSpec {
             hosts_file: None,
             volumes: Vec::new(),
             restart: RestartPolicy::No,
+            resources: Resources::default(),
         }
     }
 }
@@ -266,6 +275,22 @@ mod tests {
         let json = serde_json::to_string(&always).unwrap();
         assert!(json.contains("\"restart\":\"on-failure:3\""), "{json}");
         assert_eq!(serde_json::from_str::<ContainerSpec>(&json).unwrap(), always);
+    }
+
+    #[test]
+    fn the_limits_are_stored_only_when_set() {
+        let p = Process { args: s(&["x"]), env: vec![], working_dir: "/".into(), user: None };
+        let plain = ContainerSpec::new("c", "img", "/r".into(), p, Network::Host);
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("resources"), "{json}");
+        // a config.json written before limits existed still loads
+        assert!(serde_json::from_str::<ContainerSpec>(&json).unwrap().resources.is_unset());
+
+        let limited =
+            plain.with_resources(Resources { memory: Some(64 << 20), cpus_millis: Some(500), ..Default::default() });
+        let json = serde_json::to_string(&limited).unwrap();
+        assert!(json.contains("\"resources\":{\"memory\":67108864,\"cpus_millis\":500}"), "{json}");
+        assert_eq!(serde_json::from_str::<ContainerSpec>(&json).unwrap(), limited);
     }
 
     #[test]

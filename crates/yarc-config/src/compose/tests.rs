@@ -222,7 +222,7 @@ fn healthcheck_problems() {
 
 #[test]
 fn unsupported_keys_are_errors_but_extensions_are_ignored() {
-    for key in ["build: .", "networks: [n]", "cap_add: [NET_ADMIN]", "deploy: {}"] {
+    for key in ["build: .", "networks: [n]", "cap_add: [NET_ADMIN]"] {
         let e = err(&svc(&format!("    {key}")));
         let name = key.split(':').next().unwrap();
         assert_eq!(e, format!("service 'a': unsupported key '{name}'"));
@@ -412,4 +412,79 @@ fn x_yarc_sets_the_user_and_wins_over_the_generic_key() {
     assert_eq!(e, "service 'a' x-yarc: unsupported key 'memory'");
     assert!(err(&svc("    x-yarc: {user: ''}")).contains("user"));
     assert!(err(&svc("    x-yarc: [root]")).contains("x-yarc"));
+}
+
+#[test]
+fn service_level_limits() {
+    let r = ok(&svc("    mem_limit: 512m\n    memswap_limit: 768m\n    cpus: 0.5\n    pids_limit: 200")).services["a"]
+        .resources;
+    assert_eq!(r.memory, Some(512 << 20));
+    assert_eq!(r.memory_swap, Some(768 << 20));
+    assert_eq!((r.cpus_millis, r.pids), (Some(500), Some(200)));
+    assert!(ok(&svc("")).services["a"].resources.is_unset());
+    // numbers are bytes / CPUs, and -1 processes means unlimited
+    let r = ok(&svc("    mem_limit: 134217728\n    cpus: 2\n    pids_limit: -1")).services["a"].resources;
+    assert_eq!((r.memory, r.cpus_millis, r.pids), (Some(128 << 20), Some(2000), None));
+}
+
+#[test]
+fn deploy_resources_limits_are_the_same_limits() {
+    let deploy = "    deploy:\n      resources:\n        limits:\n          memory: 1g\n          cpus: '1.5'\n          pids: 50\n";
+    let r = ok(&svc(deploy)).services["a"].resources;
+    assert_eq!((r.memory, r.cpus_millis, r.pids), (Some(1 << 30), Some(1500), Some(50)));
+    // the same value in both places is fine; different values are not
+    let both = format!("{deploy}    mem_limit: 1g\n");
+    assert_eq!(ok(&svc(&both)).services["a"].resources.memory, Some(1 << 30));
+    let clash = format!("{deploy}    mem_limit: 2g\n");
+    assert!(err(&svc(&clash)).contains("also set elsewhere"), "{}", err(&svc(&clash)));
+    // reservations have nothing to reserve: accepted, ignored
+    let reserved =
+        "    deploy:\n      resources:\n        reservations:\n          memory: 64m\n          cpus: '0.25'\n";
+    assert!(ok(&svc(reserved)).services["a"].resources.is_unset());
+}
+
+#[test]
+fn other_deploy_keys_and_resource_keys_still_fail_loudly() {
+    for (extra, needle) in [
+        ("    deploy:\n      replicas: 2", "service 'a' deploy: unsupported key 'replicas'"),
+        ("    deploy:\n      resources:\n        limits:\n          devices: x", "unsupported key 'devices'"),
+        ("    deploy:\n      resources:\n        reservations:\n          devices: x", "unsupported key 'devices'"),
+        ("    deploy:\n      resources:\n        extra: x", "unsupported key 'extra'"),
+        ("    cpu_shares: 512", "unsupported key 'cpu_shares'"),
+        ("    cpuset: '0'", "unsupported key 'cpuset'"),
+        ("    mem_reservation: 64m", "unsupported key 'mem_reservation'"),
+        ("    ulimits: {}", "unsupported key 'ulimits'"),
+    ] {
+        let e = err(&svc(extra));
+        assert!(e.contains(needle), "{extra}: {e}");
+    }
+}
+
+#[test]
+fn bad_limits_name_the_key_and_the_value_only() {
+    for (extra, needle) in [
+        ("    mem_limit: lots", "service 'a': mem_limit: invalid size 'lots'"),
+        ("    mem_limit: 1m", "service 'a': mem_limit: '1m' is too small"),
+        ("    cpus: 0", "service 'a': cpus: '0' must be at least"),
+        ("    cpus: [1]", "service 'a': cpus: must be a number"),
+        ("    pids_limit: 0", "service 'a': pids_limit: invalid value '0'"),
+        ("    memswap_limit: 1g", "service 'a': memswap_limit: needs a memory limit"),
+        ("    mem_limit: 1g\n    memswap_limit: 512m", "memswap_limit: is memory plus swap"),
+        (
+            "    deploy:\n      resources:\n        limits:\n          memory: x",
+            "deploy.resources.limits.memory: invalid size",
+        ),
+    ] {
+        let e = err(&svc(extra));
+        assert!(e.contains(needle), "{extra}: {e}");
+    }
+}
+
+#[test]
+fn limits_may_come_from_interpolated_values() {
+    let p = parse_compose(&svc("    mem_limit: ${MEM:-256m}\n    cpus: ${CPUS:-1}"), &env).unwrap();
+    assert_eq!(
+        (p.services["a"].resources.memory, p.services["a"].resources.cpus_millis),
+        (Some(256 << 20), Some(1000))
+    );
 }

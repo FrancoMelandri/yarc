@@ -54,7 +54,16 @@ pub fn start(root: &Path, id: &str, debug: bool, rm: bool) -> Result<()> {
         .append(true)
         .open(&shim_log_path)
         .with_context(|| format!("cannot open {}", shim_log_path.display()))?;
-    let mut cmd = Command::new(std::env::current_exe().context("cannot locate the yarc executable")?);
+    let exe = std::env::current_exe().context("cannot locate the yarc executable")?;
+    // A container with limits has its shim (and so everything it starts) run in a systemd
+    // scope that carries them; one without is started as always.
+    let mut cmd = if spec.resources.is_unset() {
+        Command::new(&exe)
+    } else {
+        yarc_runtime::check_host(&spec.resources, yarc_runtime::host_cpus())?;
+        yarc_runtime::require_scopes()?;
+        yarc_runtime::scope_command(&spec.resources, &exe)
+    };
     cmd.arg("--root").arg(root).arg("__shim").arg(id);
     if debug {
         cmd.arg("--debug");

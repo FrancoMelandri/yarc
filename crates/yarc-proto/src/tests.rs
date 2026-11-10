@@ -20,6 +20,7 @@ fn every_command() -> Vec<Command> {
         Command::Create(spec()),
         Command::Run { spec: spec(), rm: true, detach: true, debug: false },
         Command::Ps { all: true },
+        Command::Stats { ids: vec!["c".into()] },
         Command::ContainerLs,
         Command::Start { id: "c".into(), detach: true, debug: true },
         Command::Exec { id: "c".into(), env: vec!["A=1".into()], workdir: Some("/w".into()), cmd: vec!["ls".into()] },

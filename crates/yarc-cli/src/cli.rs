@@ -51,6 +51,8 @@ pub enum Command {
     Run(RunArgs),
     /// List running containers
     Ps(PsArgs),
+    /// Show the memory, CPU and process use of running containers that have limits
+    Stats(StatsArgs),
     /// Create and start all services of the project (Linux only)
     Up(UpArgs),
     /// Stop and remove all containers of the project (Linux only)
@@ -146,6 +148,12 @@ pub struct PsArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct StatsArgs {
+    /// Containers to show [default: every running container that has limits]
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct AgentArgs {
     /// Speak the protocol on stdin and stdout (the only transport so far)
     #[arg(long, required = true)]
@@ -222,12 +230,58 @@ pub struct CreateArgs {
     #[arg(long, value_name = "POLICY", default_value = "no")]
     pub restart: yarc_runtime::RestartPolicy,
 
+    /// Memory limit, e.g. 512m or 1.5g; a container over it is killed (exit 137)
+    #[arg(short = 'm', long, value_name = "SIZE", value_parser = memory_arg)]
+    pub memory: Option<u64>,
+
+    /// Memory plus swap limit [default with --memory: no swap]
+    #[arg(long, value_name = "SIZE", value_parser = memory_swap_arg)]
+    pub memory_swap: Option<u64>,
+
+    /// CPUs the container may use, e.g. 0.5 or 2 (thousandths of a CPU are kept)
+    #[arg(long, value_name = "N", value_parser = cpus_arg)]
+    pub cpus: Option<u32>,
+
+    /// Maximum number of processes and threads in the container
+    #[arg(long, value_name = "N", value_parser = pids_arg)]
+    pub pids_limit: Option<u64>,
+
     /// Image reference; pulled automatically when missing
     pub image: String,
 
     /// Command and arguments, replacing the image's Cmd
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub cmd: Vec<String>,
+}
+
+fn memory_arg(s: &str) -> Result<u64, String> {
+    yarc_config::parse_memory(s).map_err(|e| e.reason)
+}
+
+fn memory_swap_arg(s: &str) -> Result<u64, String> {
+    yarc_config::parse_memory_swap(s).map_err(|e| e.reason)
+}
+
+fn cpus_arg(s: &str) -> Result<u32, String> {
+    yarc_config::parse_cpus(s).map_err(|e| e.reason)
+}
+
+fn pids_arg(s: &str) -> Result<u64, String> {
+    yarc_config::parse_pids(s).map_err(|e| e.reason)?.ok_or_else(|| "omit the flag for no limit".to_string())
+}
+
+impl CreateArgs {
+    /// The limits asked for, checked against each other.
+    pub fn resources(&self) -> Result<yarc_config::Resources, String> {
+        let resources = yarc_config::Resources {
+            memory: self.memory,
+            memory_swap: self.memory_swap,
+            cpus_millis: self.cpus,
+            pids: self.pids_limit,
+        };
+        resources.check().map_err(|e| format!("--memory-swap {}", e.reason))?;
+        Ok(resources)
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -446,6 +500,45 @@ mod tests {
         assert_eq!(a.network, yarc_runtime::Network::Host);
         assert_eq!((a.name, a.entrypoint, a.workdir, a.user), (None, None, None, None));
         assert!(a.restart.is_no());
+    }
+
+    #[test]
+    fn limits_are_parsed_and_checked_by_the_parser() {
+        let Command::Run(a) =
+            parse(&["run", "-m", "512m", "--memory-swap", "1g", "--cpus", "0.5", "--pids-limit", "100", "alpine"])
+                .unwrap()
+                .command
+        else {
+            panic!()
+        };
+        let c = a.create;
+        assert_eq!(
+            (c.memory, c.memory_swap, c.cpus, c.pids_limit),
+            (Some(512 << 20), Some(1 << 30), Some(500), Some(100))
+        );
+        assert!(c.resources().is_ok());
+        let Command::Create(none) = parse(&["create", "alpine"]).unwrap().command else { panic!() };
+        assert!(none.resources().unwrap().is_unset());
+
+        for (flag, value, needle) in [
+            ("--memory", "lots", "invalid size 'lots'"),
+            ("--memory", "1m", "minimum is 6m"),
+            ("--cpus", "0", "at least 0.01"),
+            ("--pids-limit", "0", "positive"),
+        ] {
+            let err = parse(&["create", flag, value, "alpine"]).unwrap_err().to_string();
+            assert!(err.contains(needle) && err.contains(flag), "{flag} {value}: {err}");
+        }
+        let err = parse(&["create", "--pids-limit=-1", "alpine"]).unwrap_err().to_string();
+        assert!(err.contains("omit the flag"), "{err}");
+        // swap is memory plus swap: it needs a memory limit and cannot be below it
+        let Command::Create(a) = parse(&["create", "--memory-swap", "1g", "alpine"]).unwrap().command else { panic!() };
+        assert!(a.resources().unwrap_err().contains("needs a memory limit"));
+        let Command::Create(a) = parse(&["create", "-m", "1g", "--memory-swap", "512m", "alpine"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert!(a.resources().unwrap_err().contains("cannot be below"));
     }
 
     #[test]

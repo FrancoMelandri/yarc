@@ -9,7 +9,7 @@
 
 ## Non-goals (v1)
 - `build:` / Dockerfile / BuildKit.
-- Full compose-spec compatibility: unsupported keys (`build`, `networks`, `deploy`, ...) are errors, never silently ignored.
+- Full compose-spec compatibility: unsupported keys (`build`, `networks`, most of `deploy`, ...) are errors, never silently ignored.
 - Rootless mode (planned later).
 - Swarm/Kubernetes-like orchestration.
 
@@ -98,10 +98,11 @@ services:
 
 Principles: short keys, one way to write each thing, `needs` replaces `depends_on` conditions.
 `cmd` (a list of arguments, added in M4a) replaces the image's default command.
+`resources: { memory: 512m, memory_swap: 1g, cpus: 0.5, pids: 200 }` sets the container's limits (see "CPU and memory limits").
 
 ## CLI (v1)
 Images: `pull`, `load`, `image ls|rm|unpack`.
-Containers: `run`, `create`, `start`, `stop`, `kill`, `wait`, `ps`, `logs`, `rm`, `pull`.
+Containers: `run`, `create` (with `--memory`, `--memory-swap`, `--cpus`, `--pids-limit`), `start`, `stop`, `kill`, `wait`, `ps`, `stats`, `logs`, `rm`, `pull`.
 Projects: `up`, `down`, `project ps|logs|stop|config`; global `--file` / `--project`.
 Also `doctor`. Still to come: `restart`. Hidden: `agent --stdio` (serves the `yarc-proto` protocol).
 
@@ -128,8 +129,21 @@ Windows host; everything up to M4 is developed and tested inside WSL2 (Ubuntu-24
 ## Compose files
 `yarc up` reads a Docker Compose file as is (`compose.yaml`, `docker-compose.yml`, ... are found in the current directory when there is no `yarc.yaml`; `-f FILE` / `--file FILE` names one; any file not called `yarc.*` is read as compose). Details and decisions: `docs/progress/C-compose-plan.md`.
 
-- **Supported:** `image`, `command`, `entrypoint`, `environment`, `ports` (published on 127.0.0.1), `volumes` (short form), top-level `volumes`, `depends_on` (list or with `service_started` / `service_healthy`), `user`, `working_dir`, `healthcheck`, `container_name` (an extra name on the project network), file `secrets` (read-only at `/run/secrets/<name>`), `profiles`, `stop_grace_period`, `restart`.
+- **Supported:** `image`, `command`, `entrypoint`, `environment`, `ports` (published on 127.0.0.1), `volumes` (short form), top-level `volumes`, `depends_on` (list or with `service_started` / `service_healthy`), `user`, `working_dir`, `healthcheck`, `container_name` (an extra name on the project network), file `secrets` (read-only at `/run/secrets/<name>`), `profiles`, `stop_grace_period`, `restart`, and the limits `mem_limit`, `memswap_limit`, `cpus`, `pids_limit`, `deploy.resources.limits` (see "CPU and memory limits").
 - **Variables:** `${VAR}`, `${VAR:-d}`, `${VAR:?msg}` and the other forms; values from the process environment, then the `.env` next to the file, or the `--env-file`s instead of it (repeatable, later wins).
 - **Profiles:** `--profile NAME` (repeatable) or `COMPOSE_PROFILES`.
 - **`x-yarc:`** per service holds yarc-only settings; today `user: root`, needed for images that declare a non-root `USER` because the rootless runtime only maps uid 0. Docker ignores the block.
 - **Restart policies** (`no`, `always`, `unless-stopped`, `on-failure[:N]`) are carried out by the container's shim; `stop`, `down`, `rm -f` and `kill` are never undone. `always` and `unless-stopped` behave the same because there is no boot-time supervisor.
+
+## CPU and memory limits
+Per container: memory, memory plus swap, CPUs and number of processes (`--memory`/`-m`, `--memory-swap`, `--cpus`, `--pids-limit` on `run`/`create`; `mem_limit`, `memswap_limit`, `cpus`, `pids_limit` and `deploy.resources.limits` in compose; `resources: {memory, memory_swap, cpus, pids}` in `yarc.yaml`). Plan, measurements and decisions: `docs/progress/L-limits-plan.md`; steps `L1`-`L5` in `docs/progress/`.
+
+- **Mechanism.** A rootless process cannot write cgroup files from where yarc runs (the `wsl.exe` session's cgroup is not delegated, and `cpu` is not enabled in the user's `app.slice`), but it can ask the user's systemd for a transient scope. A container **with** limits has its shim (or, in the foreground, `container start`) run as `systemd-run --user --scope --collect -p MemoryMax=… -p MemorySwapMax=… -p CPUQuota=…% -p TasksMax=… -p Delegate=yes`; everything it forks, the container included, stays in that scope. A container without limits is started exactly as before. The scope lives as long as the shim, so limits survive restart-policy loops, and `--collect` leaves nothing behind after `stop`, `down` or `rm -f`.
+- **Memory.** Exceeding the limit is an OOM kill (exit 137). With a memory limit and no `--memory-swap`, swap is 0, so the outcome is predictable (Docker would allow twice the limit in total; WSL has swap on by default). `--memory-swap` is memory **plus** swap, like Docker. The container's init raises its `oom_score_adj`, so the kernel picks it rather than the shim, which records the outcome: the `oom_kill` counter of the scope is compared before and after each run, and `ps` shows `Exited (137) OOM killed` or `Restarting (exit 137, OOM killed, in 4s)`.
+- **No systemd, no limits.** If `systemd-run --user` does not work, a container with limits **fails to start** and says how to enable systemd (`/etc/wsl.conf`, `[boot] systemd=true`, `wsl --shutdown`); a limit that is silently not enforced would be worse. Containers without limits never need it. A `cpus` above the machine's CPU count is refused before anything is created.
+- **Validation** is shared by every reader (`yarc-config::resources`): sizes in `b/k/m/g/t` (binary, case-insensitive, fractions allowed), memory at least 6m, `cpus` at least 0.01, a swap limit needs a memory limit and cannot be below it. Errors name the key and the offending token, never more.
+- **Definition hash.** Limits take part in it only when set, so existing containers keep their hash and changing a limit makes `up` recreate the service (there is no live update).
+- **`yarc stats [ID…]`** shows memory used and limit, CPU % over a 1 s sample and processes for running containers with limits, read from the scope's cgroup files. A container without limits has no cgroup of its own, so there is nothing to measure.
+- **Containers see the limits.** `/proc/self/cgroup` inside a container names its scope and `/sys/fs/cgroup` is the host hierarchy, so a JVM (checked with Temurin 21 and with the PMS image) finds `memory.max` and `cpu.max` itself and sizes its heap from them: with `-m 768m --cpus 1` the PMS reports a 768 MiB limit and one CPU. The container does not get a cgroup namespace of its own, so tools that read `/sys/fs/cgroup/memory.max` directly (not through `/proc/self/cgroup`) see the host root and report no limit.
+
+What is not covered: `cpu_shares`, `cpuset`, `cpu_period`, `ulimits`, `shm_size`, `mem_reservation`, block I/O limits and live updates (all still unsupported keys or absent); `deploy.resources.reservations` is accepted and ignored (nothing to reserve), without a note. Page cache and in-container `tmpfs` count against the memory limit, as in Docker. The limits apply inside the WSL VM, whose own size is `.wslconfig`'s business. cgroup v1 only is unsupported (WSL2's kernel is v2).

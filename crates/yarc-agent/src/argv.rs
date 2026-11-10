@@ -74,6 +74,10 @@ fn create_opts(a: Args, s: &CreateSpec) -> Args {
         .opt("--user", s.user.as_deref())
         .opt("--network", s.network.as_deref())
         .opt("--restart", s.restart.as_deref())
+        .opt("--memory", s.memory.as_deref())
+        .opt("--memory-swap", s.memory_swap.as_deref())
+        .opt("--cpus", s.cpus.as_deref())
+        .opt("--pids-limit", s.pids_limit.as_deref())
 }
 
 fn create_positionals(a: Args, s: &CreateSpec) -> Args {
@@ -131,6 +135,7 @@ fn command_args(command: &Command) -> Result<Vec<String>, ArgError> {
             create_positionals(create_opts(a, spec), spec).finish()
         }
         Command::Ps { all } => a.word("ps").flag(*all, "--all").finish(),
+        Command::Stats { ids } => a.word("stats").pos(ids.clone()).finish(),
         Command::ContainerLs => a.word("container").word("ls").finish(),
         Command::Start { id, detach, debug } => a
             .word("container")
@@ -264,6 +269,20 @@ mod tests {
     }
 
     #[test]
+    fn limits_become_flags_only_when_set() {
+        let mut s = spec("a", &[]);
+        assert_eq!(args(Command::Create(s.clone())), ["create", "--", "a"]);
+        s.memory = Some("536870912".into());
+        s.memory_swap = Some("1073741824".into());
+        s.cpus = Some("0.5".into());
+        s.pids_limit = Some("100".into());
+        assert_eq!(
+            args(Command::Create(s)),
+            ["create", "--memory=536870912", "--memory-swap=1073741824", "--cpus=0.5", "--pids-limit=100", "--", "a"]
+        );
+    }
+
+    #[test]
     fn create_start_exec() {
         assert_eq!(args(Command::Create(spec("a", &[]))), ["create", "--", "a"]);
         assert_eq!(
@@ -299,6 +318,8 @@ mod tests {
         );
         assert_eq!(args(Command::Ps { all: true }), ["ps", "--all"]);
         assert_eq!(args(Command::ContainerLs), ["container", "ls"]);
+        assert_eq!(args(Command::Stats { ids: vec![] }), ["stats"]);
+        assert_eq!(args(Command::Stats { ids: vec!["a".into()] }), ["stats", "--", "a"]);
     }
 
     #[test]

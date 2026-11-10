@@ -15,6 +15,8 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub type RequestId = u64;
 
 /// Client -> agent.
+// One short-lived frame per request: boxing `Request` would only complicate every construction site.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientFrame {
@@ -31,10 +33,18 @@ pub enum ClientFrame {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentFrame {
-    Hello { version: u32, agent: String },
-    Event { id: RequestId, event: Event },
+    Hello {
+        version: u32,
+        agent: String,
+    },
+    Event {
+        id: RequestId,
+        event: Event,
+    },
     /// The agent cannot continue (bad frame, version mismatch); it exits after this.
-    Fatal { message: String },
+    Fatal {
+        message: String,
+    },
 }
 
 /// What a request produces, ending with exactly one `Exit` or `Failed`.
@@ -99,13 +109,26 @@ pub struct CreateSpec {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     // images
-    Pull { image: String, #[serde(default)] jobs: Option<u16>, #[serde(default)] platform: Option<String> },
+    Pull {
+        image: String,
+        #[serde(default)]
+        jobs: Option<u16>,
+        #[serde(default)]
+        platform: Option<String>,
+    },
     /// `file` is a path.
-    Load { file: String },
+    Load {
+        file: String,
+    },
     ImageLs,
-    ImageRm { images: Vec<String> },
+    ImageRm {
+        images: Vec<String>,
+    },
     /// `dir` is a path.
-    ImageUnpack { image: String, dir: String },
+    ImageUnpack {
+        image: String,
+        dir: String,
+    },
     // containers
     Create(CreateSpec),
     Run {
@@ -118,9 +141,18 @@ pub enum Command {
         #[serde(default)]
         debug: bool,
     },
-    Ps { #[serde(default)] all: bool },
+    Ps {
+        #[serde(default)]
+        all: bool,
+    },
     ContainerLs,
-    Start { id: String, #[serde(default)] detach: bool, #[serde(default)] debug: bool },
+    Start {
+        id: String,
+        #[serde(default)]
+        detach: bool,
+        #[serde(default)]
+        debug: bool,
+    },
     Exec {
         id: String,
         #[serde(default)]
@@ -129,9 +161,19 @@ pub enum Command {
         workdir: Option<String>,
         cmd: Vec<String>,
     },
-    Stop { ids: Vec<String>, #[serde(default)] time: Option<u64> },
-    Kill { ids: Vec<String>, #[serde(default)] signal: Option<String> },
-    Wait { ids: Vec<String> },
+    Stop {
+        ids: Vec<String>,
+        #[serde(default)]
+        time: Option<u64>,
+    },
+    Kill {
+        ids: Vec<String>,
+        #[serde(default)]
+        signal: Option<String>,
+    },
+    Wait {
+        ids: Vec<String>,
+    },
     Logs {
         id: String,
         #[serde(default)]
@@ -141,10 +183,22 @@ pub enum Command {
         #[serde(default)]
         follow: bool,
     },
-    Rm { ids: Vec<String>, #[serde(default)] force: bool },
+    Rm {
+        ids: Vec<String>,
+        #[serde(default)]
+        force: bool,
+    },
     // projects
-    Up { #[serde(default)] detach: bool },
-    Down { #[serde(default)] time: Option<u64>, #[serde(default)] volumes: bool },
+    Up {
+        #[serde(default)]
+        detach: bool,
+    },
+    Down {
+        #[serde(default)]
+        time: Option<u64>,
+        #[serde(default)]
+        volumes: bool,
+    },
     ProjectPs,
     ProjectLogs {
         #[serde(default)]
@@ -156,6 +210,9 @@ pub enum Command {
         #[serde(default)]
         follow: bool,
     },
-    ProjectStop { #[serde(default)] time: Option<u64> },
+    ProjectStop {
+        #[serde(default)]
+        time: Option<u64>,
+    },
     ProjectConfig,
 }

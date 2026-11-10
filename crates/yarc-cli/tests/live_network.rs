@@ -30,7 +30,12 @@ impl Proj {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_yarc"));
-        cmd.arg("--root").arg(self.root.path()).arg("--file").arg(self.dir.path().join("yarc.yaml")).args(["-p", "demo"]).args(args);
+        cmd.arg("--root")
+            .arg(self.root.path())
+            .arg("--file")
+            .arg(self.dir.path().join("yarc.yaml"))
+            .args(["-p", "demo"])
+            .args(args);
         cmd
     }
 
@@ -53,7 +58,8 @@ impl Proj {
     }
 
     fn started_ms(&self, container: &str) -> u64 {
-        let state = std::fs::read_to_string(self.root.path().join("containers").join(container).join("state.json")).unwrap();
+        let state =
+            std::fs::read_to_string(self.root.path().join("containers").join(container).join("state.json")).unwrap();
         serde_json::from_str::<serde_json::Value>(&state).unwrap()["started_ms"].as_u64().unwrap()
     }
 }

@@ -61,7 +61,13 @@ fn golden_wire_format() {
     assert_eq!(
         json(&ClientFrame::Request {
             id: 2,
-            globals: Globals { root: None, file: Some("/p/yarc.yaml".into()), project: Some("demo".into()), profiles: vec![], env_files: vec![] },
+            globals: Globals {
+                root: None,
+                file: Some("/p/yarc.yaml".into()),
+                project: Some("demo".into()),
+                profiles: vec![],
+                env_files: vec![]
+            },
             command: Command::Up { detach: true },
         }),
         r#"{"type":"request","id":2,"globals":{"root":null,"file":"/p/yarc.yaml","project":"demo"},"command":{"type":"up","detach":true}}"#
@@ -92,7 +98,15 @@ fn optional_fields_default_and_unknown_fields_are_ignored() {
     let c: Command = serde_json::from_str(r#"{"type":"down","future":"x"}"#).unwrap();
     assert_eq!(c, Command::Down { time: None, volumes: false });
     let c: Command = serde_json::from_str(r#"{"type":"run","image":"a"}"#).unwrap();
-    assert_eq!(c, Command::Run { spec: CreateSpec { image: "a".into(), ..Default::default() }, rm: false, detach: false, debug: false });
+    assert_eq!(
+        c,
+        Command::Run {
+            spec: CreateSpec { image: "a".into(), ..Default::default() },
+            rm: false,
+            detach: false,
+            debug: false
+        }
+    );
     let g: Globals = serde_json::from_str("{}").unwrap();
     assert_eq!(g, Globals::default());
 }

@@ -171,9 +171,7 @@ impl<'a> Unpacker<'a> {
                 self.report.skipped_special += 1;
                 return Ok(());
             }
-            EntryType::GNUSparse => {
-                return Err(OciError::Unsupported("sparse files in layers".into()))
-            }
+            EntryType::GNUSparse => return Err(OciError::Unsupported("sparse files in layers".into())),
             _ => return Ok(()), // pax / gnu extension headers etc.
         }
 
@@ -503,7 +501,10 @@ mod tests {
     fn special_files_are_skipped_and_counted() {
         let e = env();
         let report = e
-            .layer(vec![raw("dev/null", EntryType::Char, "", b"", 0o666), raw("dev/fifo", EntryType::Fifo, "", b"", 0o644)])
+            .layer(vec![
+                raw("dev/null", EntryType::Char, "", b"", 0o666),
+                raw("dev/fifo", EntryType::Fifo, "", b"", 0o644),
+            ])
             .unwrap();
         assert_eq!(report.skipped_special, 2);
         assert!(!e.exists("dev/null"));
@@ -514,7 +515,8 @@ mod tests {
     #[test]
     fn upper_layer_overrides_and_whiteouts_delete() {
         let e = env();
-        e.layer(vec![file("a.txt", "old"), file("b.txt", "keep"), dir("d/"), file("d/x", "x"), file("gone", "g")]).unwrap();
+        e.layer(vec![file("a.txt", "old"), file("b.txt", "keep"), dir("d/"), file("d/x", "x"), file("gone", "g")])
+            .unwrap();
         let report = e
             .layer(vec![file("a.txt", "new"), file(".wh.gone", ""), file(".wh.d", ""), file(".wh.never-existed", "")])
             .unwrap();
@@ -562,7 +564,8 @@ mod tests {
         e.layer(vec![file("a", "data")]).unwrap();
         e.layer(vec![hard("sub/b", "a")]).unwrap();
         assert_eq!(e.read("sub/b"), "data");
-        let (ia, ib) = (fs::metadata(e.root.join("a")).unwrap().ino(), fs::metadata(e.root.join("sub/b")).unwrap().ino());
+        let (ia, ib) =
+            (fs::metadata(e.root.join("a")).unwrap().ino(), fs::metadata(e.root.join("sub/b")).unwrap().ino());
         assert_eq!(ia, ib);
     }
 

@@ -30,8 +30,7 @@ pub enum DotenvError {
 }
 
 fn valid_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 /// Parse a `.env` document. `outer` resolves variables not defined earlier in the file
@@ -90,7 +89,11 @@ where
                 if !rest.is_empty() && !rest.starts_with('#') {
                     return Err(DotenvError::TrailingText { line: line_no });
                 }
-                if q == '\'' { body } else { expand(&body)? }
+                if q == '\'' {
+                    body
+                } else {
+                    expand(&body)?
+                }
             }
             _ => expand(strip_inline_comment(value).trim_end())?,
         };
@@ -100,9 +103,7 @@ where
 }
 
 fn strip_inline_comment(value: &str) -> &str {
-    match value.char_indices().find(|&(i, c)| {
-        c == '#' && (i == 0 || value[..i].ends_with([' ', '\t']))
-    }) {
+    match value.char_indices().find(|&(i, c)| c == '#' && (i == 0 || value[..i].ends_with([' ', '\t']))) {
         Some((i, _)) => &value[..i],
         None => value,
     }

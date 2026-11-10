@@ -7,8 +7,7 @@ use crate::auth::{parse_challenge, parse_token_response, token_url, BearerChalle
 use crate::digest::Digest;
 use crate::error::{OciError, Result};
 use crate::manifest::{
-    parse_config, parse_manifest, select_platform, ImageConfig, ImageManifest, Manifest, Platform,
-    ACCEPTED,
+    parse_config, parse_manifest, select_platform, ImageConfig, ImageManifest, Manifest, Platform, ACCEPTED,
 };
 use crate::reference::{Reference, Target};
 use crate::transport::{Response, Transport};
@@ -61,9 +60,7 @@ impl<T: Transport> RegistryClient<T> {
                 child_digest.verify(&child_bytes, "platform manifest")?;
                 match parse_manifest(&child_bytes)? {
                     Manifest::Image(m) => (child_digest, child_bytes, m),
-                    Manifest::Index(_) => {
-                        return Err(OciError::UnsupportedManifest("nested image index".into()))
-                    }
+                    Manifest::Index(_) => return Err(OciError::UnsupportedManifest("nested image index".into())),
                 }
             }
         };
@@ -101,12 +98,7 @@ impl<T: Transport> RegistryClient<T> {
         let accept_value = accept.join(", ");
         let mut retried = false;
         loop {
-            let auth_value = self
-                .tokens
-                .lock()
-                .unwrap()
-                .get(&key)
-                .map(|t| format!("Bearer {t}"));
+            let auth_value = self.tokens.lock().unwrap().get(&key).map(|t| format!("Bearer {t}"));
             let mut headers: Vec<(&str, &str)> = Vec::new();
             if !accept_value.is_empty() {
                 headers.push(("Accept", &accept_value));
@@ -154,7 +146,8 @@ mod tests {
 
     const BASE: &str = "https://registry-1.docker.io/v2/library/alpine";
     const CHALLENGE: &str = r#"Bearer realm="https://auth.docker.io/token",service="registry.docker.io""#;
-    const TOKEN_URL: &str = "https://auth.docker.io/token?service=registry.docker.io&scope=repository%3Alibrary%2Falpine%3Apull";
+    const TOKEN_URL: &str =
+        "https://auth.docker.io/token?service=registry.docker.io&scope=repository%3Alibrary%2Falpine%3Apull";
 
     struct Fixture {
         fake: Arc<Fake>,
@@ -220,18 +213,13 @@ mod tests {
             fx.fake.auth_headers_for(&format!("/manifests/{}", fx.child_digest)),
             vec![Some("Bearer tok123".to_string())]
         );
-        assert_eq!(
-            fx.fake.auth_headers_for("/blobs/"),
-            vec![Some("Bearer tok123".to_string())]
-        );
+        assert_eq!(fx.fake.auth_headers_for("/blobs/"), vec![Some("Bearer tok123".to_string())]);
     }
 
     #[test]
     fn sends_accept_header_for_all_manifest_types() {
         let fx = fixture(None);
-        RegistryClient::new(fx.fake.clone())
-            .resolve(&alpine(), &Platform::new("linux", "amd64"))
-            .unwrap();
+        RegistryClient::new(fx.fake.clone()).resolve(&alpine(), &Platform::new("linux", "amd64")).unwrap();
         let calls = fx.fake.calls.lock().unwrap();
         let accept = &calls[0].1.iter().find(|(k, _)| k == "Accept").unwrap().1;
         for mt in ACCEPTED {
@@ -242,18 +230,16 @@ mod tests {
     #[test]
     fn rejects_tampered_platform_manifest() {
         let fx = fixture(Some(br#"{"schemaVersion":2,"config":{},"layers":[]}"#));
-        let err = RegistryClient::new(fx.fake.clone())
-            .resolve(&alpine(), &Platform::new("linux", "amd64"))
-            .unwrap_err();
+        let err =
+            RegistryClient::new(fx.fake.clone()).resolve(&alpine(), &Platform::new("linux", "amd64")).unwrap_err();
         assert!(matches!(err, OciError::DigestMismatch { .. }), "{err}");
     }
 
     #[test]
     fn errors_when_platform_missing() {
         let fx = fixture(None);
-        let err = RegistryClient::new(fx.fake.clone())
-            .resolve(&alpine(), &Platform::new("linux", "riscv64"))
-            .unwrap_err();
+        let err =
+            RegistryClient::new(fx.fake.clone()).resolve(&alpine(), &Platform::new("linux", "riscv64")).unwrap_err();
         assert!(matches!(err, OciError::NoMatchingPlatform { .. }), "{err}");
     }
 

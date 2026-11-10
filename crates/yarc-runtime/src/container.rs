@@ -71,7 +71,8 @@ impl ContainerStore {
     pub fn save(&self, spec: &ContainerSpec) -> Result<()> {
         check_id(&spec.id)?;
         let path = self.config_path(&spec.id);
-        let json = serde_json::to_vec_pretty(spec).map_err(|source| RuntimeError::Json { path: path.clone(), source })?;
+        let json =
+            serde_json::to_vec_pretty(spec).map_err(|source| RuntimeError::Json { path: path.clone(), source })?;
         write_atomic(&path, &json)
     }
 
@@ -87,7 +88,8 @@ impl ContainerStore {
     pub fn save_state(&self, id: &str, state: &ContainerState) -> Result<()> {
         check_id(id)?;
         let path = self.state_path(id);
-        let json = serde_json::to_vec_pretty(state).map_err(|source| RuntimeError::Json { path: path.clone(), source })?;
+        let json =
+            serde_json::to_vec_pretty(state).map_err(|source| RuntimeError::Json { path: path.clone(), source })?;
         write_atomic(&path, &json)
     }
 
@@ -132,7 +134,9 @@ impl ContainerStore {
         match file.try_lock() {
             Ok(()) => Ok(Some(file)),
             Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Error(e)) => Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e }),
+            Err(TryLockError::Error(e)) => {
+                Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e })
+            }
         }
     }
 
@@ -189,14 +193,20 @@ impl ContainerStore {
         let file = match File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                return if self.container_dir(id).is_dir() { Ok(false) } else { Err(RuntimeError::NotFound(id.to_string())) };
+                return if self.container_dir(id).is_dir() {
+                    Ok(false)
+                } else {
+                    Err(RuntimeError::NotFound(id.to_string()))
+                };
             }
             Err(e) => return Err(RuntimeError::Io { context: format!("cannot open {}", path.display()), source: e }),
         };
         match file.try_lock() {
             Ok(()) => Ok(false), // released again when `file` is dropped
             Err(TryLockError::WouldBlock) => Ok(true),
-            Err(TryLockError::Error(e)) => Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e }),
+            Err(TryLockError::Error(e)) => {
+                Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e })
+            }
         }
     }
 
@@ -280,7 +290,11 @@ pub(crate) fn check_id(id: &str) -> Result<()> {
     let ok = id.len() <= MAX_NAME
         && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
-    if ok { Ok(()) } else { Err(RuntimeError::InvalidName(id.to_string())) }
+    if ok {
+        Ok(())
+    } else {
+        Err(RuntimeError::InvalidName(id.to_string()))
+    }
 }
 
 /// `RandomState` is seeded randomly per instance by the standard library, which
@@ -302,7 +316,12 @@ mod tests {
     }
 
     fn spec(store: &ContainerStore, id: &str) -> ContainerSpec {
-        let p = Process { args: vec!["echo".into(), "hi".into()], env: vec![("A".into(), "1".into())], working_dir: "/".into(), user: None };
+        let p = Process {
+            args: vec!["echo".into(), "hi".into()],
+            env: vec![("A".into(), "1".into())],
+            working_dir: "/".into(),
+            user: None,
+        };
         ContainerSpec::new(id, "alpine:3.20", store.rootfs_path(id), p, Network::Host)
     }
 

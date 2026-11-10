@@ -38,7 +38,11 @@ fn config_shows_the_resolved_project_in_start_order() {
     assert!(out.contains("project: shop"), "{out}");
     let lines: Vec<&str> = out.lines().filter(|l| l.contains(" image ")).collect();
     assert_eq!(lines.len(), 3, "{out}");
-    assert!(lines[0].contains("db") && lines[0].contains("shop-db-1") && lines[0].contains("postgres:16"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("db") && lines[0].contains("shop-db-1") && lines[0].contains("postgres:16"),
+        "{}",
+        lines[0]
+    );
     assert!(lines[1].contains("api") && lines[1].contains("needs: db(healthy)"), "{}", lines[1]);
     assert!(lines[2].contains("web") && lines[2].contains("needs: api(started)"), "{}", lines[2]);
 }

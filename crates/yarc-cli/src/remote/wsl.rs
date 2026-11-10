@@ -9,9 +9,9 @@
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 
@@ -126,7 +126,7 @@ pub fn wsl_text(bytes: &[u8]) -> String {
     if !utf16 {
         return String::from_utf8_lossy(bytes).into_owned();
     }
-    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
     String::from_utf16_lossy(&units).replace(['\u{feff}', '\0'], "")
 }
 

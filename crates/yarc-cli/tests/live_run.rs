@@ -11,12 +11,7 @@ use std::time::Duration;
 const IMAGE: &str = "alpine:3.20";
 
 fn yarc(root: &std::path::Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_yarc"))
-        .arg("--root")
-        .arg(root)
-        .args(args)
-        .output()
-        .expect("failed to run yarc")
+    Command::new(env!("CARGO_BIN_EXE_yarc")).arg("--root").arg(root).args(args).output().expect("failed to run yarc")
 }
 
 /// create + start; returns (exit code, stdout, stderr of the start step).
@@ -51,9 +46,8 @@ fn exit_status_is_passed_through() {
 #[test]
 #[ignore]
 fn the_process_is_pid_1_root_with_its_own_hostname_and_image_filesystem() {
-    let (code, out, _) = run_container(&[
-        IMAGE, "sh", "-c", "echo $$ $(id -u) $(hostname) $(. /etc/os-release; echo $ID)",
-    ]);
+    let (code, out, _) =
+        run_container(&[IMAGE, "sh", "-c", "echo $$ $(id -u) $(hostname) $(. /etc/os-release; echo $ID)"]);
     assert_eq!(code, 0);
     let fields: Vec<&str> = out.split_whitespace().collect();
     assert_eq!((fields[0], fields[1], fields[3]), ("1", "0", "alpine"));
@@ -79,7 +73,10 @@ fn only_the_containers_own_processes_are_visible() {
 #[ignore]
 fn standard_device_nodes_work() {
     let (code, out, _) = run_container(&[
-        IMAGE, "sh", "-c", "echo x > /dev/null && head -c 8 /dev/urandom | wc -c && test -e /dev/pts && echo ok",
+        IMAGE,
+        "sh",
+        "-c",
+        "echo x > /dev/null && head -c 8 /dev/urandom | wc -c && test -e /dev/pts && echo ok",
     ]);
     assert_eq!((code, out.split_whitespace().collect::<Vec<_>>()), (0, vec!["8", "ok"]));
 }
@@ -87,7 +84,8 @@ fn standard_device_nodes_work() {
 #[test]
 #[ignore]
 fn network_none_leaves_only_loopback() {
-    let (_, out, _) = run_container(&["--network", "none", IMAGE, "sh", "-c", "tail -n +3 /proc/net/dev | cut -d: -f1"]);
+    let (_, out, _) =
+        run_container(&["--network", "none", IMAGE, "sh", "-c", "tail -n +3 /proc/net/dev | cut -d: -f1"]);
     assert_eq!(out.trim(), "lo");
 }
 
@@ -227,7 +225,8 @@ fn dead_and_already_running_containers_are_detected() {
 
     write_state(1);
     // A supervisor is whoever holds the container's lock; play that part here.
-    let lock = std::fs::OpenOptions::new().create(true).write(true).open(r.join("containers/d/lock")).unwrap();
+    let lock =
+        std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(r.join("containers/d/lock")).unwrap();
     lock.try_lock().unwrap();
     assert!(text(&yarc(r, &["container", "ls"]).stdout).contains("Running"));
     for args in [&["container", "start", "d"][..], &["container", "start", "-d", "d"][..]] {
@@ -504,8 +503,21 @@ fn the_whole_lifecycle_with_unprefixed_commands() {
 fn exec_runs_inside_the_running_container() {
     let root = common::seeded_root();
     let r = root.path();
-    let out = yarc(r, &["run", "-d", "--name", "x", "-e", "A=1", IMAGE, "sh", "-c",
-        "echo hello > /tmp/marker; trap 'exit 0' TERM; while true; do sleep 0.2; done"]);
+    let out = yarc(
+        r,
+        &[
+            "run",
+            "-d",
+            "--name",
+            "x",
+            "-e",
+            "A=1",
+            IMAGE,
+            "sh",
+            "-c",
+            "echo hello > /tmp/marker; trap 'exit 0' TERM; while true; do sleep 0.2; done",
+        ],
+    );
     assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
     eventually("the marker file", || text(&yarc(r, &["exec", "x", "cat", "/tmp/marker"]).stdout) == "hello\n");
 
@@ -515,7 +527,8 @@ fn exec_runs_inside_the_running_container() {
     let f: Vec<String> = text(&out.stdout).split_whitespace().map(String::from).collect();
     assert!(f[0].parse::<u32>().unwrap() < 100, "a pid from the container's own PID namespace: {f:?}");
     assert_eq!(&f[1..], ["0", "x", "1", "/"]);
-    let n: u32 = text(&yarc(r, &["exec", "x", "sh", "-c", "ls /proc | grep -c '^[0-9]'"]).stdout).trim().parse().unwrap();
+    let n: u32 =
+        text(&yarc(r, &["exec", "x", "sh", "-c", "ls /proc | grep -c '^[0-9]'"]).stdout).trim().parse().unwrap();
     assert!(n <= 8, "only the container's processes are visible, saw {n}");
 
     // options, exit status, failures

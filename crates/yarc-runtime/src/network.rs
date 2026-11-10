@@ -96,7 +96,9 @@ impl ProjectNet {
         match file.try_lock() {
             Ok(()) => Ok(Some(file)),
             Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Error(e)) => Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e }),
+            Err(TryLockError::Error(e)) => {
+                Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e })
+            }
         }
     }
 
@@ -120,7 +122,8 @@ impl ProjectNet {
     pub fn write_info(&self, info: &NetInfo) -> Result<()> {
         self.create_dir()?;
         let path = self.info_path();
-        let json = serde_json::to_vec_pretty(info).map_err(|source| RuntimeError::Json { path: path.clone(), source })?;
+        let json =
+            serde_json::to_vec_pretty(info).map_err(|source| RuntimeError::Json { path: path.clone(), source })?;
         write_atomic(&path, &json)
     }
 
@@ -140,10 +143,7 @@ impl ProjectNet {
         let mut unique: Vec<&str> = names.iter().map(String::as_str).collect();
         unique.sort_unstable();
         unique.dedup();
-        let content = format!(
-            "127.0.0.1\tlocalhost {}\n::1\tlocalhost ip6-localhost ip6-loopback\n",
-            unique.join(" ")
-        );
+        let content = format!("127.0.0.1\tlocalhost {}\n::1\tlocalhost ip6-localhost ip6-loopback\n", unique.join(" "));
         write_atomic(&self.hosts_path(), content.as_bytes())
     }
 
@@ -199,7 +199,12 @@ mod tests {
     fn info_roundtrip_and_missing_info() {
         let (_r, net) = net();
         assert_eq!(net.info().unwrap(), None);
-        let info = NetInfo { pid: 42, published: vec![PortMap { host: 8080, container: 80 }], outbound: true, outbound_note: None };
+        let info = NetInfo {
+            pid: 42,
+            published: vec![PortMap { host: 8080, container: 80 }],
+            outbound: true,
+            outbound_note: None,
+        };
         net.create_dir().unwrap();
         net.write_info(&info).unwrap();
         assert_eq!(net.info().unwrap(), Some(info));
@@ -244,7 +249,11 @@ mod tests {
 
     #[test]
     fn ports_sort_by_host_then_container() {
-        let mut ports = vec![PortMap { host: 90, container: 1 }, PortMap { host: 80, container: 2 }, PortMap { host: 80, container: 1 }];
+        let mut ports = [
+            PortMap { host: 90, container: 1 },
+            PortMap { host: 80, container: 2 },
+            PortMap { host: 80, container: 1 },
+        ];
         ports.sort();
         assert_eq!(ports.iter().map(|p| (p.host, p.container)).collect::<Vec<_>>(), [(80, 1), (80, 2), (90, 1)]);
     }
@@ -311,7 +320,10 @@ mod dns_tests {
     fn resolv_conf_points_at_the_forwarder_only_with_outbound() {
         assert_eq!(resolv_conf(false, &["x.com".into()]), "");
         assert_eq!(resolv_conf(true, &[]), "nameserver 169.254.0.53\n");
-        assert_eq!(resolv_conf(true, &["x.com".into(), "y.com".into()]), "nameserver 169.254.0.53\nsearch x.com y.com\n");
+        assert_eq!(
+            resolv_conf(true, &["x.com".into(), "y.com".into()]),
+            "nameserver 169.254.0.53\nsearch x.com y.com\n"
+        );
     }
 
     #[test]

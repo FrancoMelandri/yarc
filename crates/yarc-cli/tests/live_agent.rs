@@ -85,7 +85,11 @@ fn run_streams_a_containers_output_through_the_agent() {
     let root = common::seeded_root();
     let globals = Globals { root: Some(root.path().display().to_string()), ..Default::default() };
     let mut a = agent();
-    let spec = CreateSpec { image: "alpine:3.20".into(), cmd: vec!["sh".into(), "-c".into(), "echo hi; echo oops >&2; exit 4".into()], ..Default::default() };
+    let spec = CreateSpec {
+        image: "alpine:3.20".into(),
+        cmd: vec!["sh".into(), "-c".into(), "echo hi; echo oops >&2; exit 4".into()],
+        ..Default::default()
+    };
     a.request(1, &globals, Command::Run { spec, rm: true, detach: false, debug: false });
     let (out, err, code) = a.read_until(1, |_| false);
     assert_eq!((out.as_str(), err.as_str(), code), ("hi\n", "oops\n", Some(4)));
@@ -98,7 +102,11 @@ fn cancel_stops_a_foreground_up_like_ctrl_c() {
     let root = common::seeded_root();
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("yarc.yaml");
-    std::fs::write(&file, "services:\n  one:\n    image: alpine:3.20\n    cmd: [sh, -c, 'while true; do sleep 0.2; done']\n").unwrap();
+    std::fs::write(
+        &file,
+        "services:\n  one:\n    image: alpine:3.20\n    cmd: [sh, -c, 'while true; do sleep 0.2; done']\n",
+    )
+    .unwrap();
     let globals = Globals {
         root: Some(root.path().display().to_string()),
         file: Some(file.display().to_string()),

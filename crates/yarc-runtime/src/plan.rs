@@ -130,10 +130,7 @@ pub fn mount_plan(spec: &ContainerSpec) -> Vec<SetupOp> {
         }),
         None => plan.push(SetupOp::WriteFile {
             path: "etc/hosts".into(),
-            contents: format!(
-                "127.0.0.1\tlocalhost {}\n::1\tlocalhost ip6-localhost ip6-loopback\n",
-                spec.hostname
-            ),
+            contents: format!("127.0.0.1\tlocalhost {}\n::1\tlocalhost ip6-localhost ip6-loopback\n", spec.hostname),
         }),
     }
     if let Some(shared) = &spec.hosts_file {
@@ -198,7 +195,9 @@ mod tests {
         plan.iter()
             .map(|op| match op {
                 SetupOp::Fs { target, .. } | SetupOp::Bind { target, .. } => target.clone(),
-                SetupOp::Symlink { path, .. } | SetupOp::WriteFile { path, .. } | SetupOp::CopyHost { path, .. } => path.clone(),
+                SetupOp::Symlink { path, .. } | SetupOp::WriteFile { path, .. } | SetupOp::CopyHost { path, .. } => {
+                    path.clone()
+                }
             })
             .collect()
     }
@@ -236,11 +235,16 @@ mod tests {
     #[test]
     fn sys_depends_on_the_network_mode() {
         let host = mount_plan(&spec(Network::Host));
-        assert!(host.iter().any(|op| matches!(op, SetupOp::Bind { target, recursive: true, opts, .. } if target == "sys" && opts.readonly)));
+        assert!(host.iter().any(
+            |op| matches!(op, SetupOp::Bind { target, recursive: true, opts, .. } if target == "sys" && opts.readonly)
+        ));
         assert!(!host.iter().any(|op| matches!(op, SetupOp::Fs { fstype: "sysfs", .. })));
         for own_netns in [Network::None, Network::Project] {
             let plan = mount_plan(&spec(own_netns));
-            assert!(plan.iter().any(|op| matches!(op, SetupOp::Fs { fstype: "sysfs", opts, .. } if opts.readonly)), "{own_netns:?}");
+            assert!(
+                plan.iter().any(|op| matches!(op, SetupOp::Fs { fstype: "sysfs", opts, .. } if opts.readonly)),
+                "{own_netns:?}"
+            );
         }
     }
 
@@ -253,7 +257,10 @@ mod tests {
             SetupOp::Bind { source, target, kind: BindKind::File, optional: false, .. }
                 if source == &PathBuf::from("/p/net/hosts") && target == "etc/hosts")));
         assert!(!plan.iter().any(|op| matches!(op, SetupOp::WriteFile { path, .. } if path == "etc/hosts")));
-        assert!(!plan.iter().any(|op| matches!(op, SetupOp::CopyHost { .. })), "the host resolv.conf is not copied into a project");
+        assert!(
+            !plan.iter().any(|op| matches!(op, SetupOp::CopyHost { .. })),
+            "the host resolv.conf is not copied into a project"
+        );
         assert!(plan.iter().any(|op| matches!(op,
             SetupOp::Bind { source, target, optional: true, .. }
                 if source == &PathBuf::from("/p/net/resolv.conf") && target == "etc/resolv.conf")));
@@ -262,7 +269,9 @@ mod tests {
 
     #[test]
     fn resolv_conf_is_copied_only_with_host_network() {
-        let has = |plan: &[SetupOp]| plan.iter().any(|op| matches!(op, SetupOp::CopyHost { path, .. } if path == "etc/resolv.conf"));
+        let has = |plan: &[SetupOp]| {
+            plan.iter().any(|op| matches!(op, SetupOp::CopyHost { path, .. } if path == "etc/resolv.conf"))
+        };
         assert!(has(&mount_plan(&spec(Network::Host))));
         assert!(!has(&mount_plan(&spec(Network::None))));
     }
@@ -281,20 +290,28 @@ mod tests {
         ];
         let plan = mount_plan(&s);
         let n = plan.len();
-        assert!(matches!(&plan[n - 2], SetupOp::Bind { source, target, kind: BindKind::Dir, opts, optional: false, .. }
-            if source == &data && target == "var/lib/app" && !opts.readonly));
-        assert!(matches!(&plan[n - 1], SetupOp::Bind { source, target, kind: BindKind::File, opts, optional: false, .. }
-            if source == &file && target == "etc/app.conf" && opts.readonly));
-        assert!(mount_plan(&spec(Network::Host)).iter().all(|op| !matches!(op, SetupOp::Bind { target, .. } if target.starts_with("var"))));
+        assert!(
+            matches!(&plan[n - 2], SetupOp::Bind { source, target, kind: BindKind::Dir, opts, optional: false, .. }
+            if source == &data && target == "var/lib/app" && !opts.readonly)
+        );
+        assert!(
+            matches!(&plan[n - 1], SetupOp::Bind { source, target, kind: BindKind::File, opts, optional: false, .. }
+            if source == &file && target == "etc/app.conf" && opts.readonly)
+        );
+        assert!(mount_plan(&spec(Network::Host))
+            .iter()
+            .all(|op| !matches!(op, SetupOp::Bind { target, .. } if target.starts_with("var"))));
     }
 
     #[test]
     fn hostname_and_hosts_files_use_the_container_hostname() {
         let plan = mount_plan(&spec(Network::Host));
-        let file = |name: &str| plan.iter().find_map(|op| match op {
-            SetupOp::WriteFile { path, contents } if path == name => Some(contents.clone()),
-            _ => None,
-        });
+        let file = |name: &str| {
+            plan.iter().find_map(|op| match op {
+                SetupOp::WriteFile { path, contents } if path == name => Some(contents.clone()),
+                _ => None,
+            })
+        };
         assert_eq!(file("etc/hostname").unwrap(), "0123456789ab\n");
         assert!(file("etc/hosts").unwrap().starts_with("127.0.0.1\tlocalhost 0123456789ab\n"));
     }

@@ -8,9 +8,9 @@ use std::path::Path;
 use anyhow::{anyhow, Context, Result};
 use yarc_oci::{BlobStore, Platform, PullReport, Reference, RegistryClient, UreqTransport};
 
-use crate::cli::{PullArgs, UnpackArgs};
 #[cfg(unix)]
 use crate::cli::CreateArgs;
+use crate::cli::{PullArgs, UnpackArgs};
 
 fn open_store(root: &Path) -> Result<BlobStore> {
     BlobStore::open(root).with_context(|| format!("cannot open store at {}", root.display()))
@@ -65,7 +65,7 @@ fn short_time(created: Option<&str>) -> String {
 /// `yarc image ls`
 pub fn image_ls(root: &Path) -> Result<()> {
     let store = open_store(root)?;
-    println!("{:<44} {:<14} {:>10}  {}", "IMAGE", "IMAGE ID", "SIZE", "CREATED");
+    println!("{:<44} {:<14} {:>10}  CREATED", "IMAGE", "IMAGE ID", "SIZE");
     for (reference, digest) in store.list_refs()? {
         let id = &digest.hex()[..12];
         match store.load_image(&reference) {
@@ -119,8 +119,8 @@ pub fn image_rm(root: &Path, args: crate::cli::ImageRmArgs) -> Result<()> {
 /// `yarc load`: import an OCI layout into the store; works offline and on any OS.
 pub fn load(root: &Path, args: crate::cli::LoadArgs) -> Result<()> {
     let store = open_store(root)?;
-    let report = yarc_oci::load_path(&store, &args.file)
-        .with_context(|| format!("cannot load {}", args.file.display()))?;
+    let report =
+        yarc_oci::load_path(&store, &args.file).with_context(|| format!("cannot load {}", args.file.display()))?;
     for image in &report.images {
         println!("Loaded {}", image.reference);
         println!("  digest: {}", image.manifest_digest);
@@ -385,9 +385,7 @@ pub fn unpack(_root: &Path, _args: UnpackArgs) -> Result<()> {
 
 fn parse_platform(s: &str) -> Result<Platform> {
     match s.split_once('/') {
-        Some((os, arch)) if !os.is_empty() && !arch.is_empty() && !arch.contains('/') => {
-            Ok(Platform::new(os, arch))
-        }
+        Some((os, arch)) if !os.is_empty() && !arch.is_empty() && !arch.contains('/') => Ok(Platform::new(os, arch)),
         _ => Err(anyhow!("invalid platform '{s}', expected OS/ARCH, e.g. linux/amd64")),
     }
 }

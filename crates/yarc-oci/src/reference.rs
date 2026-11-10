@@ -88,19 +88,20 @@ impl FromStr for Reference {
             }
             _ => (DOCKER_HUB_REGISTRY.to_string(), name.to_string()),
         };
-        let (registry, repository) = if matches!(registry.as_str(), "docker.io" | "index.docker.io" | DOCKER_HUB_REGISTRY) {
-            let repo = if repository.contains('/') { repository } else { format!("library/{repository}") };
-            (DOCKER_HUB_REGISTRY.to_string(), repo)
-        } else {
-            (registry, repository)
-        };
+        let (registry, repository) =
+            if matches!(registry.as_str(), "docker.io" | "index.docker.io" | DOCKER_HUB_REGISTRY) {
+                let repo = if repository.contains('/') { repository } else { format!("library/{repository}") };
+                (DOCKER_HUB_REGISTRY.to_string(), repo)
+            } else {
+                (registry, repository)
+            };
 
-        validate_repository(&repository).map_err(|m| err(m))?;
+        validate_repository(&repository).map_err(err)?;
 
         let target = match (digest, tag) {
             (Some(d), _) => Target::Digest(d),
             (None, Some(t)) => {
-                validate_tag(t).map_err(|m| err(m))?;
+                validate_tag(t).map_err(err)?;
                 Target::Tag(t.into())
             }
             (None, None) => Target::Tag("latest".into()),

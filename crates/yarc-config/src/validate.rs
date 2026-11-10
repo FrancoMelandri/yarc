@@ -11,15 +11,12 @@ pub(crate) fn validate(p: &Project) -> Result<(), ConfigError> {
             if target == name {
                 return Err(ConfigError::SelfNeed(name.clone()));
             }
-            let dep = p.services.get(target).ok_or_else(|| ConfigError::UnknownNeed {
-                service: name.clone(),
-                target: target.clone(),
-            })?;
+            let dep = p
+                .services
+                .get(target)
+                .ok_or_else(|| ConfigError::UnknownNeed { service: name.clone(), target: target.clone() })?;
             if *cond == Condition::Healthy && dep.health.is_none() {
-                return Err(ConfigError::NeedsHealthWithoutCheck {
-                    service: name.clone(),
-                    target: target.clone(),
-                });
+                return Err(ConfigError::NeedsHealthWithoutCheck { service: name.clone(), target: target.clone() });
             }
         }
     }
@@ -33,8 +30,8 @@ fn check_names(p: &Project) -> Result<(), ConfigError> {
     let mut taken: BTreeMap<&str, &str> = BTreeMap::new();
     for (name, svc) in &p.services {
         let Some(cn) = svc.container_name.as_deref() else { continue };
-        let collides = (cn != name && p.services.contains_key(cn))
-            || taken.insert(cn, name).is_some_and(|other| other != name);
+        let collides =
+            (cn != name && p.services.contains_key(cn)) || taken.insert(cn, name).is_some_and(|other| other != name);
         if collides {
             return Err(ConfigError::NameCollision { service: name.clone(), name: cn.to_string() });
         }
@@ -44,16 +41,8 @@ fn check_names(p: &Project) -> Result<(), ConfigError> {
 
 fn check_cycles(p: &Project) -> Result<(), ConfigError> {
     // Kahn's algorithm: whatever cannot be removed is part of / behind a cycle.
-    let mut indegree: BTreeMap<&str, usize> = p
-        .services
-        .iter()
-        .map(|(n, s)| (n.as_str(), s.needs.len()))
-        .collect();
-    let mut ready: Vec<&str> = indegree
-        .iter()
-        .filter(|(_, d)| **d == 0)
-        .map(|(n, _)| *n)
-        .collect();
+    let mut indegree: BTreeMap<&str, usize> = p.services.iter().map(|(n, s)| (n.as_str(), s.needs.len())).collect();
+    let mut ready: Vec<&str> = indegree.iter().filter(|(_, d)| **d == 0).map(|(n, _)| *n).collect();
     let mut done: BTreeSet<&str> = BTreeSet::new();
     while let Some(n) = ready.pop() {
         done.insert(n);

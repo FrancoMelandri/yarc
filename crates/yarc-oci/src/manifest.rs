@@ -88,15 +88,8 @@ pub fn select_platform<'a>(index: &'a ImageIndex, want: &Platform) -> Result<&'a
     index
         .manifests
         .iter()
-        .find(|d| {
-            d.platform
-                .as_ref()
-                .is_some_and(|p| p.os == want.os && p.architecture == want.architecture)
-        })
-        .ok_or_else(|| OciError::NoMatchingPlatform {
-            os: want.os.clone(),
-            arch: want.architecture.clone(),
-        })
+        .find(|d| d.platform.as_ref().is_some_and(|p| p.os == want.os && p.architecture == want.architecture))
+        .ok_or_else(|| OciError::NoMatchingPlatform { os: want.os.clone(), arch: want.architecture.clone() })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -130,8 +123,7 @@ pub struct RootFs {
 }
 
 pub fn parse_config(bytes: &[u8]) -> Result<ImageConfig> {
-    serde_json::from_slice(bytes)
-        .map_err(|e| OciError::Json { what: "image config".into(), msg: e.to_string() })
+    serde_json::from_slice(bytes).map_err(|e| OciError::Json { what: "image config".into(), msg: e.to_string() })
 }
 
 #[cfg(test)]
@@ -154,16 +146,15 @@ mod tests {
 
     #[test]
     fn selects_matching_platform_and_ignores_attestations() {
-        let Manifest::Index(idx) = parse_manifest(index_json().as_bytes()).unwrap() else {
-            panic!("expected index")
-        };
+        let Manifest::Index(idx) = parse_manifest(index_json().as_bytes()).unwrap() else { panic!("expected index") };
         assert_eq!(select_platform(&idx, &Platform::new("linux", "amd64")).unwrap().digest, D1);
         assert_eq!(select_platform(&idx, &Platform::new("linux", "arm64")).unwrap().digest, D2);
         assert!(matches!(
             select_platform(&idx, &Platform::new("linux", "riscv64")),
             Err(OciError::NoMatchingPlatform { .. })
         ));
-        assert!(select_platform(&idx, &Platform::new("unknown", "unknown")).is_ok()); // explicit ask only
+        assert!(select_platform(&idx, &Platform::new("unknown", "unknown")).is_ok());
+        // explicit ask only
     }
 
     #[test]

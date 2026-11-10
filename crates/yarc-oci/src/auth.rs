@@ -101,8 +101,8 @@ struct TokenResponse {
 }
 
 pub fn parse_token_response(body: &[u8]) -> Result<String> {
-    let r: TokenResponse = serde_json::from_slice(body)
-        .map_err(|e| OciError::Auth(format!("invalid token response: {e}")))?;
+    let r: TokenResponse =
+        serde_json::from_slice(body).map_err(|e| OciError::Auth(format!("invalid token response: {e}")))?;
     r.token
         .or(r.access_token)
         .filter(|t| !t.is_empty())

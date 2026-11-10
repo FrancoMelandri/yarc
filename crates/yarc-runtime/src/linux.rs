@@ -34,10 +34,10 @@ use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{chdir, dup2, execve, fork, getegid, geteuid, pipe2, pivot_root, sethostname, ForkResult, Pid};
 
 use crate::error::{Result, RuntimeError};
+use crate::network::ProjectNet;
 use crate::paths::{resolve_executable, safe_join, safe_join_file};
 use crate::plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
 use crate::spec::{ContainerSpec, Network};
-use crate::network::ProjectNet;
 use crate::StartOptions;
 
 const FORWARDED: [Signal; 4] = [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP, Signal::SIGQUIT];
@@ -128,7 +128,8 @@ fn holder_pid(spec: &ContainerSpec) -> Result<u32> {
 /// and is allowed because we own it (same uid as the holder).
 fn join_project_network(holder: u32) -> std::result::Result<(), String> {
     let open = |name: &str| {
-        File::open(format!("/proc/{holder}/ns/{name}")).map_err(|e| format!("cannot open the {name} namespace of the project network: {e}"))
+        File::open(format!("/proc/{holder}/ns/{name}"))
+            .map_err(|e| format!("cannot open the {name} namespace of the project network: {e}"))
     };
     let (user, net) = (open("user")?, open("net")?);
     // The user namespace first: it grants the right to join the network one.
@@ -325,7 +326,15 @@ pub(crate) fn exit(code: i32) -> ! {
     unsafe { nix::libc::_exit(code) }
 }
 
-fn monitor(spec: &ContainerSpec, plan: &[SetupOp], debug: bool, holder: Option<u32>, mut up: File, mut down: File, stdio: Stdio) -> ! {
+fn monitor(
+    spec: &ContainerSpec,
+    plan: &[SetupOp],
+    debug: bool,
+    holder: Option<u32>,
+    mut up: File,
+    mut down: File,
+    stdio: Stdio,
+) -> ! {
     // Terminal signals (Ctrl-C) reach the whole process group; only the
     // supervisor reacts to them, and it forwards them to the container.
     for sig in FORWARDED {
@@ -334,7 +343,8 @@ fn monitor(spec: &ContainerSpec, plan: &[SetupOp], debug: bool, holder: Option<u
     }
     let _ = prctl::set_pdeathsig(Signal::SIGKILL);
 
-    let mut flags = CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWIPC;
+    let mut flags =
+        CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWUTS | CloneFlags::CLONE_NEWIPC;
     match holder {
         // Join the project's user + network namespaces; the rest is ours, and
         // owned by that user namespace.
@@ -501,7 +511,8 @@ fn apply(root: &Path, op: &SetupOp) -> std::result::Result<(), String> {
             let dir = safe_join(root, target).map_err(|e| e.to_string())?;
             fs::create_dir_all(&dir).map_err(|e| fail("creating", target, &e))?;
             let data = (!data.is_empty()).then_some(data.as_str());
-            mount(Some(*fstype), &dir, Some(*fstype), mount_flags(*opts), data).map_err(|e| fail("mounting", target, &e))
+            mount(Some(*fstype), &dir, Some(*fstype), mount_flags(*opts), data)
+                .map_err(|e| fail("mounting", target, &e))
         }
         SetupOp::Bind { source, target, kind, recursive, opts, .. } => {
             let dest = safe_join(root, target).map_err(|e| e.to_string())?;
@@ -511,7 +522,12 @@ fn apply(root: &Path, op: &SetupOp) -> std::result::Result<(), String> {
                     if let Some(parent) = dest.parent() {
                         fs::create_dir_all(parent).map_err(|e| fail("creating", target, &e))?;
                     }
-                    OpenOptions::new().write(true).create(true).truncate(false).open(&dest).map_err(|e| fail("creating", target, &e))?;
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(false)
+                        .open(&dest)
+                        .map_err(|e| fail("creating", target, &e))?;
                 }
             }
             let mut flags = MsFlags::MS_BIND;

@@ -29,7 +29,12 @@ impl Proj {
 
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_yarc"));
-        cmd.arg("--root").arg(self.root.path()).arg("--file").arg(self.dir.path().join("yarc.yaml")).args(["-p", "demo"]).args(args);
+        cmd.arg("--root")
+            .arg(self.root.path())
+            .arg("--file")
+            .arg(self.dir.path().join("yarc.yaml"))
+            .args(["-p", "demo"])
+            .args(args);
         cmd
     }
 
@@ -97,7 +102,9 @@ fn a_bind_mounted_directory_is_shared_in_both_directions_and_owned_by_you() {
     p.up();
 
     let out = p.dir.path().join("data/out.txt");
-    eventually("the container's file on the host", || out.exists() && std::fs::read_to_string(&out).unwrap() == "from-container\n");
+    eventually("the container's file on the host", || {
+        out.exists() && std::fs::read_to_string(&out).unwrap() == "from-container\n"
+    });
     eventually("the host's file seen by the container", || {
         std::fs::read_to_string(p.dir.path().join("data/copy.txt")).is_ok_and(|s| s == "from-host\n")
     });
@@ -146,7 +153,11 @@ fn read_only_works_for_sources_on_a_nosuid_nodev_filesystem() {
     std::fs::write(shm.path().join("seed"), "shm-seed\n").unwrap();
     let p = Proj::new(&format!(
         "services:\n{}",
-        service("app", "echo x > /ro/f 2>/dev/null && echo WROTE || echo READONLY; cat /ro/seed", &[&format!("{}:/ro:ro", shm.path().display())])
+        service(
+            "app",
+            "echo x > /ro/f 2>/dev/null && echo WROTE || echo READONLY; cat /ro/seed",
+            &[&format!("{}:/ro:ro", shm.path().display())]
+        )
     ));
     p.up();
     eventually("the container's verdict", || p.logs("app").contains("READONLY"));
@@ -208,7 +219,9 @@ fn services_can_share_a_named_volume() {
         service("reader", "true", &["shared:/mnt/shared:ro"]),
     ));
     p.up();
-    eventually("the reader to see the writer's file", || p.exec("demo-reader-1", &["cat", "/mnt/shared/file"]) == "shared-data\n");
+    eventually("the reader to see the writer's file", || {
+        p.exec("demo-reader-1", &["cat", "/mnt/shared/file"]) == "shared-data\n"
+    });
 }
 
 #[test]

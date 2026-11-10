@@ -216,7 +216,9 @@ pub fn supervise(
             Ok(e) => (e.code, e.live),
             Err(RuntimeError::Start { code, msg }) if performed > 0 => {
                 eprintln!("restart of {id} failed: {msg}");
-                let base = store.load_state(id)?.unwrap_or_else(|| ContainerState::running(std::process::id(), None, now_ms()));
+                let base = store
+                    .load_state(id)?
+                    .unwrap_or_else(|| ContainerState::running(std::process::id(), None, now_ms()));
                 (code, base.with_restarts(performed))
             }
             Err(e) => return Err(e),
@@ -262,7 +264,13 @@ struct HealthRunner<'a> {
 }
 
 impl<'a> HealthRunner<'a> {
-    fn new(store: &'a ContainerStore, spec: &'a ContainerSpec, init_pid: u32, base: ContainerState, health: HealthSpec) -> Self {
+    fn new(
+        store: &'a ContainerStore,
+        spec: &'a ContainerSpec,
+        init_pid: u32,
+        base: ContainerState,
+        health: HealthSpec,
+    ) -> Self {
         HealthRunner { store, spec, init_pid, base, tracker: HealthTracker::new(health, now_ms()), check: None }
     }
 
@@ -357,7 +365,8 @@ pub fn signal_container(store: &ContainerStore, id: &str, sig: i32) -> Result<()
         store.request_stop(id)?;
     }
     let pid = running_pid(store, id)?;
-    let signal = Signal::try_from(sig).map_err(|_| RuntimeError::Unsupported(format!("invalid signal number {sig}")))?;
+    let signal =
+        Signal::try_from(sig).map_err(|_| RuntimeError::Unsupported(format!("invalid signal number {sig}")))?;
     match kill(Pid::from_raw(pid as i32), signal) {
         Ok(()) => Ok(()),
         Err(Errno::ESRCH) => Err(RuntimeError::NotRunning(id.to_string())), // exited just now
@@ -476,11 +485,7 @@ mod tests {
         let (_r, store) = store_with("c");
         let _lock = store.try_acquire("c").unwrap().unwrap();
         // not running (no state): the signal fails, but a request is still recorded for TERM/KILL
-        for (sig, recorded) in [
-            (Signal::SIGUSR1, false),
-            (Signal::SIGHUP, false),
-            (Signal::SIGTERM, true),
-        ] {
+        for (sig, recorded) in [(Signal::SIGUSR1, false), (Signal::SIGHUP, false), (Signal::SIGTERM, true)] {
             store.clear_stop_request("c");
             assert!(matches!(signal_container(&store, "c", sig as i32), Err(RuntimeError::NotRunning(_))));
             assert_eq!(store.stop_requested("c"), recorded, "{sig:?}");

@@ -9,9 +9,7 @@ mod codec;
 mod message;
 
 pub use codec::{check_version, read_frame, write_frame, ProtoError, MAX_FRAME_BYTES};
-pub use message::{
-    AgentFrame, ClientFrame, Command, CreateSpec, Event, Globals, RequestId, PROTOCOL_VERSION,
-};
+pub use message::{AgentFrame, ClientFrame, Command, CreateSpec, Event, Globals, RequestId, PROTOCOL_VERSION};
 
 #[cfg(test)]
 mod tests;

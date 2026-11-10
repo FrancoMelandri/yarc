@@ -18,9 +18,7 @@ fn locate(env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     } else if cfg!(target_os = "macos") {
         non_empty("HOME").map(|p| p.join("Library/Application Support/yarc"))
     } else {
-        non_empty("XDG_DATA_HOME")
-            .or_else(|| non_empty("HOME").map(|h| h.join(".local/share")))
-            .map(|p| p.join("yarc"))
+        non_empty("XDG_DATA_HOME").or_else(|| non_empty("HOME").map(|h| h.join(".local/share"))).map(|p| p.join("yarc"))
     }
 }
 
@@ -41,7 +39,10 @@ mod tests {
     #[test]
     fn falls_back_to_home() {
         assert_eq!(locate(env(&[("HOME", "/home/u")])), Some(PathBuf::from("/home/u/.local/share/yarc")));
-        assert_eq!(locate(env(&[("HOME", "/home/u"), ("XDG_DATA_HOME", "")])), Some(PathBuf::from("/home/u/.local/share/yarc")));
+        assert_eq!(
+            locate(env(&[("HOME", "/home/u"), ("XDG_DATA_HOME", "")])),
+            Some(PathBuf::from("/home/u/.local/share/yarc"))
+        );
     }
 
     #[test]

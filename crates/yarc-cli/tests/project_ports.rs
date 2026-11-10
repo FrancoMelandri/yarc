@@ -28,7 +28,8 @@ fn project(yaml: &str) -> (tempfile::TempDir, tempfile::TempDir) {
 
 #[test]
 fn a_host_port_can_only_be_published_once() {
-    let (root, dir) = project("services:\n  a:\n    image: x\n    ports: ['8080:80']\n  b:\n    image: y\n    ports: ['8080:81']\n");
+    let (root, dir) =
+        project("services:\n  a:\n    image: x\n    ports: ['8080:80']\n  b:\n    image: y\n    ports: ['8080:81']\n");
     let out = config(root.path(), dir.path());
     assert!(!out.status.success());
     assert!(text(&out.stderr).contains("host port 8080 is published by both a and b"), "{}", text(&out.stderr));

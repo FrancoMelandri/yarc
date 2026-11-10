@@ -41,12 +41,7 @@ pub fn pull<T: Transport + Sync>(
     store.put_bytes(&image.manifest_digest, &image.manifest_bytes)?;
 
     let mut seen = HashSet::new();
-    let layers: Vec<&Descriptor> = image
-        .manifest
-        .layers
-        .iter()
-        .filter(|l| seen.insert(l.digest.as_str()))
-        .collect();
+    let layers: Vec<&Descriptor> = image.manifest.layers.iter().filter(|l| seen.insert(l.digest.as_str())).collect();
 
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);

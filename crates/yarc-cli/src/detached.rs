@@ -171,12 +171,7 @@ pub fn parse_publish(s: &str) -> Result<yarc_runtime::PortMap> {
 /// until it reports `ready`, or the reason it could not start (e.g. a host
 /// port that is already in use).
 #[cfg(target_os = "linux")]
-pub fn start_holder(
-    root: &Path,
-    project: &str,
-    publish: &[yarc_runtime::PortMap],
-    pasta: Option<&Path>,
-) -> Result<()> {
+pub fn start_holder(root: &Path, project: &str, publish: &[yarc_runtime::PortMap], pasta: Option<&Path>) -> Result<()> {
     use std::fs::OpenOptions;
     use std::io::{self, BufRead, BufReader};
     use std::os::unix::process::CommandExt;
@@ -221,7 +216,10 @@ pub fn start_holder(
             let _ = child.wait();
             match line.strip_prefix("error ") {
                 Some(msg) => anyhow::bail!("{msg}"),
-                None => anyhow::bail!("the project network holder exited before reporting (see {})", net.log_path().display()),
+                None => anyhow::bail!(
+                    "the project network holder exited before reporting (see {})",
+                    net.log_path().display()
+                ),
             }
         }
     }
@@ -280,7 +278,10 @@ mod tests {
 
     #[test]
     fn error_report_keeps_code_and_message() {
-        let RuntimeError::Start { msg, code } = parse_report("error 127 executable file not found: x\n").unwrap_err() else { panic!() };
+        let RuntimeError::Start { msg, code } = parse_report("error 127 executable file not found: x\n").unwrap_err()
+        else {
+            panic!()
+        };
         assert_eq!((code, msg.as_str()), (127, "executable file not found: x"));
     }
 

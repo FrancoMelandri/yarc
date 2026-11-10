@@ -20,8 +20,12 @@ impl fmt::Display for PathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PathError::NotAbsolute(p) => write!(f, "'{p}' is not an absolute path"),
-            PathError::Network(p) => write!(f, "'{p}' is a network path; WSL can only use local drives and its own files"),
-            PathError::OtherDistro { path, distro } => write!(f, "'{path}' belongs to another WSL distro than {distro}"),
+            PathError::Network(p) => {
+                write!(f, "'{p}' is a network path; WSL can only use local drives and its own files")
+            }
+            PathError::OtherDistro { path, distro } => {
+                write!(f, "'{path}' belongs to another WSL distro than {distro}")
+            }
         }
     }
 }

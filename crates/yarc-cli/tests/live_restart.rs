@@ -88,7 +88,13 @@ fn always_restarts_a_crashing_container_under_one_supervisor() {
     // The supervisor never lets go of the container between runs: it is listed as running
     // (or restarting) at every moment, and cannot be started a second time.
     for _ in 0..15 {
-        assert!(ps(r, false).lines().any(|l| l.starts_with("c ") || l.contains(" c ") || l.split_whitespace().next() == Some("c")), "{}", ps(r, false));
+        assert!(
+            ps(r, false)
+                .lines()
+                .any(|l| l.starts_with("c ") || l.contains(" c ") || l.split_whitespace().next() == Some("c")),
+            "{}",
+            ps(r, false)
+        );
         std::thread::sleep(Duration::from_millis(40));
     }
     let again = yarc(r, &["container", "start", "-d", "c"]);
@@ -176,7 +182,10 @@ fn other_signals_and_real_crashes_still_restart() {
     let root = common::seeded_root();
     let r = root.path();
     // USR1 makes the script exit with 3: that is a crash, not a stop
-    assert_eq!(start(r, 20, "u", "always", "echo run; trap 'exit 3' USR1; while true; do sleep 0.2; done").status.code(), Some(0));
+    assert_eq!(
+        start(r, 20, "u", "always", "echo run; trap 'exit 3' USR1; while true; do sleep 0.2; done").status.code(),
+        Some(0)
+    );
     eventually("started", || runs(r, "u") == 1);
     assert_eq!(yarc(r, &["kill", "-s", "USR1", "u"]).status.code(), Some(0));
     eventually("restart after USR1", || runs(r, "u") >= 2);
@@ -195,7 +204,10 @@ fn other_signals_and_real_crashes_still_restart() {
 fn terminating_the_shim_itself_is_a_stop() {
     let root = common::seeded_root();
     let r = root.path();
-    assert_eq!(start(r, 20, "t", "always", "echo run; trap 'exit 0' TERM; while true; do sleep 0.2; done").status.code(), Some(0));
+    assert_eq!(
+        start(r, 20, "t", "always", "echo run; trap 'exit 0' TERM; while true; do sleep 0.2; done").status.code(),
+        Some(0)
+    );
     eventually("started", || runs(r, "t") == 1);
     let shim = state(r, "t")["supervisor_pid"].as_u64().unwrap().to_string();
     assert!(Command::new("kill").args(["-TERM", &shim]).status().unwrap().success());
@@ -320,7 +332,9 @@ fn changing_the_policy_recreates_the_service() {
     let up = p.yarc(&["up", "-d"]);
     assert_eq!(up.status.code(), Some(0), "{}", text(&up.stderr));
     assert!(text(&up.stderr).contains("flaky: definition changed, recreating"), "{}", text(&up.stderr));
-    eventually("it to finish", || ps(p.root.path(), true).lines().any(|l| l.starts_with("demo-flaky-1") && l.contains("Exited (1)")));
+    eventually("it to finish", || {
+        ps(p.root.path(), true).lines().any(|l| l.starts_with("demo-flaky-1") && l.contains("Exited (1)"))
+    });
     assert_eq!(p.runs("flaky"), 1, "a fresh container, no policy: one run");
     p.yarc(&["down"]);
 }

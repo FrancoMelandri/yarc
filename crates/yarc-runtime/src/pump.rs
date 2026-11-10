@@ -47,7 +47,9 @@ pub fn pump_with_tick<W: Write>(
     let mut buf = [0u8; 8192];
     let mut log_error: Option<io::Error> = None;
     let mut last_tick = Instant::now();
-    let timeout = tick.as_ref().map_or(PollTimeout::NONE, |t| PollTimeout::from(t.every.as_millis().clamp(1, u16::MAX as u128) as u16));
+    let timeout = tick
+        .as_ref()
+        .map_or(PollTimeout::NONE, |t| PollTimeout::from(t.every.as_millis().clamp(1, u16::MAX as u128) as u16));
 
     while !streams.is_empty() {
         let ready: Vec<bool> = {

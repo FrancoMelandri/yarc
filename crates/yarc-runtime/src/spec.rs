@@ -299,7 +299,10 @@ mod tests {
 
     #[test]
     fn nothing_to_run_is_an_error() {
-        assert!(matches!(resolve_process(&ImageDefaults::default(), &Overrides::default()), Err(RuntimeError::NoCommand)));
+        assert!(matches!(
+            resolve_process(&ImageDefaults::default(), &Overrides::default()),
+            Err(RuntimeError::NoCommand)
+        ));
         let ov = Overrides { entrypoint: Some(vec![]), ..Default::default() };
         assert!(matches!(resolve_process(&nginx(), &ov), Err(RuntimeError::NoCommand)));
     }
@@ -338,14 +341,24 @@ mod tests {
 
     #[test]
     fn working_dir_and_user_precedence() {
-        let d = ImageDefaults { cmd: s(&["x"]), working_dir: Some("/app".into()), user: Some("node".into()), ..Default::default() };
+        let d = ImageDefaults {
+            cmd: s(&["x"]),
+            working_dir: Some("/app".into()),
+            user: Some("node".into()),
+            ..Default::default()
+        };
         let p = resolve_process(&d, &Overrides::default()).unwrap();
         assert_eq!((p.working_dir.as_str(), p.user.as_deref()), ("/app", Some("node")));
         let ov = Overrides { working_dir: Some("/tmp".into()), user: Some("0".into()), ..Default::default() };
         let p = resolve_process(&d, &ov).unwrap();
         assert_eq!((p.working_dir.as_str(), p.user.as_deref()), ("/tmp", Some("0")));
         // empty strings in image configs mean "unset"
-        let d = ImageDefaults { cmd: s(&["x"]), working_dir: Some(String::new()), user: Some(String::new()), ..Default::default() };
+        let d = ImageDefaults {
+            cmd: s(&["x"]),
+            working_dir: Some(String::new()),
+            user: Some(String::new()),
+            ..Default::default()
+        };
         let p = resolve_process(&d, &Overrides::default()).unwrap();
         assert_eq!((p.working_dir.as_str(), p.user), ("/", None));
     }

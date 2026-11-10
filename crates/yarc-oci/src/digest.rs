@@ -10,9 +10,7 @@ pub struct Digest(String);
 
 impl Digest {
     pub fn parse(s: &str) -> Result<Self> {
-        let hex = s
-            .strip_prefix("sha256:")
-            .ok_or_else(|| OciError::InvalidDigest(s.into()))?;
+        let hex = s.strip_prefix("sha256:").ok_or_else(|| OciError::InvalidDigest(s.into()))?;
         let valid = hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
         if valid {
             Ok(Digest(hex.into()))
@@ -40,11 +38,7 @@ impl Digest {
         if &actual == self {
             Ok(())
         } else {
-            Err(OciError::DigestMismatch {
-                what: what.into(),
-                expected: self.to_string(),
-                actual: actual.to_string(),
-            })
+            Err(OciError::DigestMismatch { what: what.into(), expected: self.to_string(), actual: actual.to_string() })
         }
     }
 }

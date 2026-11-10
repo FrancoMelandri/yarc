@@ -3,11 +3,7 @@
 use std::process::{Command, Output};
 
 fn yarc(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_yarc"))
-        .args(args)
-        .env_remove("YARC_ROOT")
-        .output()
-        .expect("failed to run yarc")
+    Command::new(env!("CARGO_BIN_EXE_yarc")).args(args).env_remove("YARC_ROOT").output().expect("failed to run yarc")
 }
 
 #[cfg(unix)]

@@ -79,7 +79,8 @@ pub fn checks(runner: &dyn Runner, bin: &str, remote: bool) -> Vec<Check> {
     );
     let ours = format!("yarc {}", env!("CARGO_PKG_VERSION"));
     if version.status == Status::Ok && version.detail != ours {
-        version.detail = format!("{} (this yarc is {ours}; the protocol version is checked on connect)", version.detail);
+        version.detail =
+            format!("{} (this yarc is {ours}; the protocol version is checked on connect)", version.detail);
         version.status = Status::Warn;
     }
     out.push(version);

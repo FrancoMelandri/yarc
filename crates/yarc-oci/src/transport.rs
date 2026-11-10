@@ -14,19 +14,13 @@ pub struct Response {
 
 impl Response {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
+        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
 
     /// Read the whole body, failing if it is larger than `max` bytes.
     pub fn read_limited(mut self, max: u64, what: &str) -> Result<Vec<u8>> {
         let mut buf = Vec::new();
-        (&mut self.body)
-            .take(max + 1)
-            .read_to_end(&mut buf)
-            .map_err(|e| OciError::Transport(e.to_string()))?;
+        (&mut self.body).take(max + 1).read_to_end(&mut buf).map_err(|e| OciError::Transport(e.to_string()))?;
         if buf.len() as u64 > max {
             return Err(OciError::TooLarge(what.into(), max));
         }
@@ -52,9 +46,7 @@ pub struct UreqTransport {
 
 impl UreqTransport {
     pub fn new() -> Self {
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .build();
+        let config = ureq::Agent::config_builder().http_status_as_error(false).build();
         UreqTransport { agent: ureq::Agent::new_with_config(config) }
     }
 }

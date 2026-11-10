@@ -35,20 +35,14 @@ fn parses_sample_project() {
         }
     );
     let api = &p.services["api"];
-    assert_eq!(
-        api.ports[0],
-        PortMapping { host: 8080, container: 80, protocol: Protocol::Tcp }
-    );
+    assert_eq!(api.ports[0], PortMapping { host: 8080, container: 80, protocol: Protocol::Tcp });
     assert_eq!(api.needs["db"], Condition::Healthy);
 }
 
 #[test]
 fn health_interval_defaults() {
     let p = parse("services:\n  a:\n    image: x\n    health: { cmd: ok }\n").unwrap();
-    assert_eq!(
-        p.services["a"].health.as_ref().unwrap().interval,
-        DEFAULT_HEALTH_INTERVAL
-    );
+    assert_eq!(p.services["a"].health.as_ref().unwrap().interval, DEFAULT_HEALTH_INTERVAL);
 }
 
 #[test]
@@ -78,14 +72,9 @@ fn volume_kinds() {
 #[test]
 fn duration_units() {
     for (s, ms) in [("500ms", 500u64), ("2s", 2000), ("1m", 60_000), ("1h", 3_600_000)] {
-        let y = format!(
-            "services:\n  a:\n    image: x\n    health: {{ cmd: ok, interval: {s} }}\n"
-        );
+        let y = format!("services:\n  a:\n    image: x\n    health: {{ cmd: ok, interval: {s} }}\n");
         let p = parse(&y).unwrap();
-        assert_eq!(
-            p.services["a"].health.as_ref().unwrap().interval,
-            Duration::from_millis(ms)
-        );
+        assert_eq!(p.services["a"].health.as_ref().unwrap().interval, Duration::from_millis(ms));
     }
     let y = "services:\n  a:\n    image: x\n    health: { cmd: ok, interval: soon }\n";
     assert!(matches!(err(y), ConfigError::InvalidDuration { .. }));
@@ -93,20 +82,14 @@ fn duration_units() {
 
 #[test]
 fn rejects_empty_image_and_no_services() {
-    assert!(matches!(
-        err("services:\n  a:\n    image: ''\n"),
-        ConfigError::EmptyImage(_)
-    ));
+    assert!(matches!(err("services:\n  a:\n    image: ''\n"), ConfigError::EmptyImage(_)));
     assert_eq!(err("services: {}\n"), ConfigError::NoServices);
     assert_eq!(err("{}\n"), ConfigError::NoServices);
 }
 
 #[test]
 fn rejects_unknown_keys_and_bad_yaml() {
-    assert!(matches!(
-        err("services:\n  a:\n    image: x\n    depends_on: [b]\n"),
-        ConfigError::Yaml(_)
-    ));
+    assert!(matches!(err("services:\n  a:\n    image: x\n    depends_on: [b]\n"), ConfigError::Yaml(_)));
     assert!(matches!(err("services: ["), ConfigError::Yaml(_)));
 }
 
@@ -118,12 +101,8 @@ fn needs_validation() {
     let selfn = "services:\n  a:\n    image: x\n    needs: { a: started }\n";
     assert_eq!(err(selfn), ConfigError::SelfNeed("a".into()));
 
-    let nohealth =
-        "services:\n  a:\n    image: x\n    needs: { b: healthy }\n  b:\n    image: y\n";
-    assert!(matches!(
-        err(nohealth),
-        ConfigError::NeedsHealthWithoutCheck { .. }
-    ));
+    let nohealth = "services:\n  a:\n    image: x\n    needs: { b: healthy }\n  b:\n    image: y\n";
+    assert!(matches!(err(nohealth), ConfigError::NeedsHealthWithoutCheck { .. }));
 }
 
 #[test]
@@ -134,7 +113,8 @@ fn detects_cycles() {
 
 #[test]
 fn cmd_is_a_list_of_arguments_and_optional() {
-    let p = parse("services:\n  a:\n    image: x\n    cmd: [sh, -c, 'echo hi; sleep 1']\n  b:\n    image: y\n").unwrap();
+    let p =
+        parse("services:\n  a:\n    image: x\n    cmd: [sh, -c, 'echo hi; sleep 1']\n  b:\n    image: y\n").unwrap();
     assert_eq!(p.services["a"].cmd, ["sh", "-c", "echo hi; sleep 1"]);
     assert!(p.services["b"].cmd.is_empty());
 }
@@ -162,7 +142,8 @@ fn empty_user_is_rejected() {
 
 #[test]
 fn restart_in_yarc_yaml() {
-    let policy = |v: &str| parse(&format!("services:\n  a:\n    image: x\n    restart: {v}\n")).map(|p| p.services["a"].restart);
+    let policy =
+        |v: &str| parse(&format!("services:\n  a:\n    image: x\n    restart: {v}\n")).map(|p| p.services["a"].restart);
     assert_eq!(policy("always").unwrap(), RestartPolicy::Always);
     assert_eq!(policy("on-failure:5").unwrap(), RestartPolicy::OnFailure { max: Some(5) });
     assert_eq!(policy("\"no\"").unwrap(), RestartPolicy::No);

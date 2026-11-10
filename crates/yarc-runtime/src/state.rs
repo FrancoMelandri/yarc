@@ -151,7 +151,11 @@ pub fn describe_at(state: Option<&ContainerState>, supervised: bool, now_ms: u64
                 1 => details.push("restarted 1 time".into()),
                 n => details.push(format!("restarted {n} times")),
             }
-            if details.is_empty() { "Running".into() } else { format!("Running ({})", details.join(", ")) }
+            if details.is_empty() {
+                "Running".into()
+            } else {
+                format!("Running ({})", details.join(", "))
+            }
         }
         Some(_) => "Dead".into(),
     }
@@ -186,13 +190,24 @@ mod tests {
 
     #[test]
     fn health_is_shown_while_running_and_dropped_on_exit() {
-        let health = Health { status: HealthStatus::Healthy, failing_streak: 0, last_exit: Some(0), last_check_ms: Some(5) };
+        let health =
+            Health { status: HealthStatus::Healthy, failing_streak: 0, last_exit: Some(0), last_check_ms: Some(5) };
         let run = ContainerState::running(10, Some(11), 0).with_health(Some(health));
         assert_eq!(describe(Some(&run), true), "Running (healthy)");
         assert_eq!(describe(Some(&run), false), "Dead");
-        let starting = run.with_health(Some(Health { status: HealthStatus::Starting, failing_streak: 0, last_exit: None, last_check_ms: None }));
+        let starting = run.with_health(Some(Health {
+            status: HealthStatus::Starting,
+            failing_streak: 0,
+            last_exit: None,
+            last_check_ms: None,
+        }));
         assert_eq!(describe(Some(&starting), true), "Running (starting)");
-        let unhealthy = run.with_health(Some(Health { status: HealthStatus::Unhealthy, failing_streak: 3, last_exit: Some(1), last_check_ms: Some(9) }));
+        let unhealthy = run.with_health(Some(Health {
+            status: HealthStatus::Unhealthy,
+            failing_streak: 3,
+            last_exit: Some(1),
+            last_check_ms: Some(9),
+        }));
         assert_eq!(describe(Some(&unhealthy), true), "Running (unhealthy)");
         let done = unhealthy.exited(0, 20);
         assert_eq!(done.health, None);
@@ -201,7 +216,8 @@ mod tests {
 
     #[test]
     fn old_state_files_without_health_still_load() {
-        let json = r#"{"status":"running","supervisor_pid":1,"pid":2,"started_ms":3,"finished_ms":null,"exit_code":null}"#;
+        let json =
+            r#"{"status":"running","supervisor_pid":1,"pid":2,"started_ms":3,"finished_ms":null,"exit_code":null}"#;
         let s: ContainerState = serde_json::from_str(json).unwrap();
         assert_eq!(s.health, None);
     }
@@ -211,7 +227,8 @@ mod tests {
         let run = ContainerState::running(10, Some(11), 0);
         assert_eq!(describe_at(Some(&run.with_restarts(1)), true, 0), "Running (restarted 1 time)");
         assert_eq!(describe_at(Some(&run.with_restarts(3)), true, 0), "Running (restarted 3 times)");
-        let health = Health { status: HealthStatus::Healthy, failing_streak: 0, last_exit: Some(0), last_check_ms: Some(5) };
+        let health =
+            Health { status: HealthStatus::Healthy, failing_streak: 0, last_exit: Some(0), last_check_ms: Some(5) };
         let both = run.with_restarts(2).with_health(Some(health));
         assert_eq!(describe_at(Some(&both), true, 0), "Running (healthy, restarted 2 times)");
         assert_eq!(describe_at(Some(&both), false, 0), "Dead");
@@ -233,13 +250,15 @@ mod tests {
 
     #[test]
     fn restart_fields_are_optional_in_old_files_and_absent_when_unused() {
-        let json = r#"{"status":"running","supervisor_pid":1,"pid":2,"started_ms":3,"finished_ms":null,"exit_code":null}"#;
+        let json =
+            r#"{"status":"running","supervisor_pid":1,"pid":2,"started_ms":3,"finished_ms":null,"exit_code":null}"#;
         let s: ContainerState = serde_json::from_str(json).unwrap();
         assert_eq!((s.restarts, s.next_restart_ms), (0, None));
         // files of containers that never restarted keep the old shape
         let out = serde_json::to_string(&ContainerState::running(1, None, 5)).unwrap();
         assert!(!out.contains("restarts") && !out.contains("next_restart_ms"), "{out}");
-        let out = serde_json::to_string(&ContainerState::running(1, None, 5).with_restarts(2).restarting(1, 6, 9)).unwrap();
+        let out =
+            serde_json::to_string(&ContainerState::running(1, None, 5).with_restarts(2).restarting(1, 6, 9)).unwrap();
         assert!(out.contains("\"restarts\":2") && out.contains("\"next_restart_ms\":9"), "{out}");
     }
 

@@ -20,7 +20,11 @@ pub enum InterpolationError {
 }
 
 fn message_suffix(message: &str) -> String {
-    if message.is_empty() { String::new() } else { format!(": {message}") }
+    if message.is_empty() {
+        String::new()
+    } else {
+        format!(": {message}")
+    }
 }
 
 fn is_name_start(c: char) -> bool {
@@ -51,8 +55,7 @@ where
             Some((_, '{')) => {
                 chars.next();
                 let start = i + 2;
-                let end = matching_brace(input, start)
-                    .ok_or_else(|| InterpolationError::Unterminated)?;
+                let end = matching_brace(input, start).ok_or(InterpolationError::Unterminated)?;
                 out.push_str(&expand_braced(&input[start..end], lookup)?);
                 // skip past the closing brace
                 while let Some(&(j, _)) = chars.peek() {
@@ -121,20 +124,25 @@ where
     match op.chars().next() {
         None if !colon => Ok(value.unwrap_or_default()),
         Some('-') => {
-            if missing { interpolate(&op[1..], lookup) } else { Ok(value.unwrap_or_default()) }
+            if missing {
+                interpolate(&op[1..], lookup)
+            } else {
+                Ok(value.unwrap_or_default())
+            }
         }
         Some('?') => {
             if missing {
-                Err(InterpolationError::Required {
-                    var: name.to_string(),
-                    message: interpolate(&op[1..], lookup)?,
-                })
+                Err(InterpolationError::Required { var: name.to_string(), message: interpolate(&op[1..], lookup)? })
             } else {
                 Ok(value.unwrap_or_default())
             }
         }
         Some('+') => {
-            if missing { Ok(String::new()) } else { interpolate(&op[1..], lookup) }
+            if missing {
+                Ok(String::new())
+            } else {
+                interpolate(&op[1..], lookup)
+            }
         }
         _ => Err(InterpolationError::Invalid),
     }
@@ -145,8 +153,7 @@ mod tests {
     use super::*;
 
     fn run(input: &str, vars: &[(&str, &str)]) -> Result<String, InterpolationError> {
-        let vars: Vec<(String, String)> =
-            vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let vars: Vec<(String, String)> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         interpolate(input, &|n: &str| vars.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone()))
     }
 
@@ -204,10 +211,7 @@ mod tests {
         assert_eq!(run("${A?m}", &[("A", "")]).unwrap(), "");
         assert!(run("${A?m}", &[]).is_err());
         assert_eq!(run("${A:?}", &[]).unwrap_err().to_string(), "required variable A is missing a value");
-        assert_eq!(
-            run("${A:?set it}", &[]).unwrap_err().to_string(),
-            "required variable A is missing a value: set it"
-        );
+        assert_eq!(run("${A:?set it}", &[]).unwrap_err().to_string(), "required variable A is missing a value: set it");
     }
 
     #[test]
@@ -226,8 +230,10 @@ mod tests {
         assert_eq!(run("${A:-$B}", &v).unwrap(), "bee");
         assert_eq!(run("${A:-${C:-deep}}", &v).unwrap(), "deep");
         assert_eq!(run("${B:+[${B}]}", &v).unwrap(), "[bee]");
-        assert_eq!(run("${A:?missing ${B}}", &v).unwrap_err().to_string(),
-            "required variable A is missing a value: missing bee");
+        assert_eq!(
+            run("${A:?missing ${B}}", &v).unwrap_err().to_string(),
+            "required variable A is missing a value: missing bee"
+        );
     }
 
     #[test]
@@ -245,10 +251,7 @@ mod tests {
     #[test]
     fn invalid_formats() {
         for bad in ["$", "a $ b", "$1", "${}", "${1A}", "${A:}", "${A:x}", "${A!}", "$-"] {
-            assert!(
-                matches!(run(bad, &[]), Err(InterpolationError::Invalid)),
-                "{bad} should be invalid"
-            );
+            assert!(matches!(run(bad, &[]), Err(InterpolationError::Invalid)), "{bad} should be invalid");
         }
         assert!(matches!(run("${A", &[]), Err(InterpolationError::Unterminated)));
         assert!(matches!(run("${A:-${B}", &[]), Err(InterpolationError::Unterminated)));

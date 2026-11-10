@@ -24,11 +24,11 @@ mod testutil;
 pub use client::{RegistryClient, ResolvedImage};
 pub use digest::Digest;
 pub use error::{OciError, Result};
-pub use manifest::{ContainerConfig, Descriptor, ImageConfig, ImageManifest, Platform};
 pub use load::{load_archive, load_dir, load_path, LoadReport, LoadedImage};
+pub use manifest::{ContainerConfig, Descriptor, ImageConfig, ImageManifest, Platform};
 pub use pull::{pull, PullReport};
 pub use reference::{Reference, Target};
 pub use store::{BlobStore, RemoveReport, StoredImage};
+pub use transport::{Response, Transport, UreqTransport};
 #[cfg(unix)]
 pub use unpack::{unpack_image, unpack_layer, UnpackReport};
-pub use transport::{Response, Transport, UreqTransport};

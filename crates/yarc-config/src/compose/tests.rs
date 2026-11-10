@@ -1,0 +1,280 @@
+use std::time::Duration;
+
+use super::*;
+use crate::{Protocol, VolumeMount};
+
+fn env(n: &str) -> Option<String> {
+    match n {
+        "HOST" => Some("10.0.0.5".into()),
+        "PORT" => Some("9000".into()),
+        "EMPTY" => Some(String::new()),
+        _ => None,
+    }
+}
+
+fn parse(y: &str) -> Result<Project, ConfigError> {
+    parse_compose(y, &env)
+}
+
+fn ok(y: &str) -> Project {
+    parse(y).unwrap_or_else(|e| panic!("{e}"))
+}
+
+fn err(y: &str) -> String {
+    parse(y).unwrap_err().to_string()
+}
+
+/// One service `a` with the given extra lines (already indented by 4).
+fn svc(extra: &str) -> String {
+    format!("services:\n  a:\n    image: img:1\n{extra}\n")
+}
+
+#[test]
+fn minimal_service() {
+    let p = ok("services:\n  a:\n    image: alpine:3\n");
+    let a = &p.services["a"];
+    assert_eq!(a.image, "alpine:3");
+    assert!(a.cmd.is_empty() && a.env.is_empty() && a.ports.is_empty() && a.volumes.is_empty());
+    assert_eq!((&a.entrypoint, &a.working_dir, &a.container_name, &a.user), (&None, &None, &None, &None));
+}
+
+#[test]
+fn command_string_list_and_entrypoint() {
+    let p = ok(&svc("    command: sh -c \"echo 'a b' && sleep 1\"\n    entrypoint: [/bin/tini, --]"));
+    let a = &p.services["a"];
+    assert_eq!(a.cmd, ["sh", "-c", "echo 'a b' && sleep 1"]);
+    assert_eq!(a.entrypoint.as_deref(), Some(&["/bin/tini".to_string(), "--".to_string()][..]));
+
+    let p = ok(&svc("    command: [sleep, 10]"));
+    assert_eq!(p.services["a"].cmd, ["sleep", "10"]);
+    // an empty entrypoint clears the image's
+    let p = ok(&svc("    entrypoint: []"));
+    assert_eq!(p.services["a"].entrypoint, Some(vec![]));
+    assert!(err(&svc("    command: \"echo 'open\"")).contains("unbalanced quotes"));
+}
+
+#[test]
+fn split_words_rules() {
+    assert_eq!(split_words("  a   b ").unwrap(), ["a", "b"]);
+    assert_eq!(split_words("a\\ b c").unwrap(), ["a b", "c"]);
+    assert_eq!(split_words("'' x").unwrap(), ["", "x"]);
+    assert_eq!(split_words("\"a\\\"b\" 'c\\d'").unwrap(), ["a\"b", "c\\d"]);
+    assert_eq!(split_words("").unwrap(), Vec::<String>::new());
+    assert!(split_words("\"open").is_none());
+}
+
+#[test]
+fn environment_list_map_and_passthrough() {
+    let p = ok(&svc("    environment:\n      - A=1\n      - B=x=y\n      - C=\n      - HOST\n      - UNSET_VAR"));
+    let e = &p.services["a"].env;
+    assert_eq!((e["A"].as_str(), e["B"].as_str(), e["C"].as_str(), e["HOST"].as_str()), ("1", "x=y", "", "10.0.0.5"));
+    assert!(!e.contains_key("UNSET_VAR"));
+
+    let p = ok(&svc("    environment:\n      A: 1\n      B: true\n      C: text\n      PORT:\n      NOPE:"));
+    let e = &p.services["a"].env;
+    assert_eq!((e["A"].as_str(), e["B"].as_str(), e["C"].as_str(), e["PORT"].as_str()), ("1", "true", "text", "9000"));
+    assert!(!e.contains_key("NOPE"));
+}
+
+#[test]
+fn interpolation_in_values_not_comments_or_keys() {
+    let y = svc("    environment:\n      - ADDR=${HOST:?need HOST}:${PORT:-1}\n      - D=${NOPE:-fallback}\n      - LIT=$$HOME  # ${REQUIRED:?never read}");
+    let e = &ok(&y).services["a"].env;
+    assert_eq!(e["ADDR"], "10.0.0.5:9000");
+    assert_eq!(e["D"], "fallback");
+    assert_eq!(e["LIT"], "$HOME");
+}
+
+#[test]
+fn interpolation_errors_name_the_place_and_never_the_value() {
+    let e = err(&svc("    environment:\n      - A=${MISSING:?set MISSING in .env}"));
+    assert_eq!(e, "services.a.environment[0]: required variable MISSING is missing a value: set MISSING in .env");
+    let e = err("services:\n  a:\n    image: \"bad$\"\n");
+    assert!(e.starts_with("services.a.image: invalid interpolation"), "{e}");
+}
+
+#[test]
+fn ports_short_syntax() {
+    let p = ok(&svc("    ports:\n      - \"8080:80\"\n      - \"127.0.0.1:${PORT:-18888}:18888\"\n      - localhost:5000:5000/udp\n      - \"53:53/tcp\""));
+    let ports = &p.services["a"].ports;
+    assert_eq!((ports[0].host, ports[0].container, ports[0].protocol), (8080, 80, Protocol::Tcp));
+    assert_eq!((ports[1].host, ports[1].container), (9000, 18888));
+    assert_eq!(ports[2].protocol, Protocol::Udp);
+    assert_eq!(ports[3].protocol, Protocol::Tcp);
+}
+
+#[test]
+fn ports_unsupported_forms() {
+    for (line, needle) in [
+        ("- \"80\"", "random host port"),
+        ("- 80", "random host port"),
+        ("- \"0.0.0.0:80:80\"", "127.0.0.1 only"),
+        ("- \"[::1]:80:80\"", "expected"),
+        ("- \"8000-8010:80\"", "1-65535"),
+        ("- \"127.0.0.1::80\"", "1-65535"),
+        ("- {target: 80, published: 80}", "long syntax"),
+    ] {
+        let e = err(&svc(&format!("    ports:\n      {line}")));
+        assert!(e.contains(needle), "{line}: {e}");
+    }
+}
+
+#[test]
+fn volumes_named_host_and_modes() {
+    let y = "services:\n  a:\n    image: i\n    volumes:\n      - data:/data\n      - ./certs:/certs:ro\n      - /abs:/abs:rw\nvolumes:\n  data:\n";
+    let v = &ok(y).services["a"].volumes;
+    assert_eq!(v[0], VolumeMount { source: VolumeSource::Named("data".into()), target: "/data".into(), read_only: false });
+    assert_eq!(v[1], VolumeMount { source: VolumeSource::Host("./certs".into()), target: "/certs".into(), read_only: true });
+    assert!(!v[2].read_only);
+}
+
+#[test]
+fn volumes_must_be_declared_and_short() {
+    let e = err(&svc("    volumes:\n      - nope:/d"));
+    assert!(e.contains("'nope' is not declared"), "{e}");
+    let e = err(&svc("    volumes:\n      - {type: bind, source: ., target: /x}"));
+    assert!(e.contains("short"), "{e}");
+    let e = err("services:\n  a:\n    image: i\nvolumes:\n  data:\n    driver: local\n");
+    assert!(e.contains("volumes.data") && e.contains("not supported"), "{e}");
+    // `data: {}` and `data: ` are both plain declarations
+    ok("services:\n  a:\n    image: i\n    volumes: [\"d:/d\", \"e:/e\"]\nvolumes:\n  d: {}\n  e:\n");
+}
+
+#[test]
+fn depends_on_list_and_map() {
+    let y = "services:\n  db:\n    image: i\n    healthcheck:\n      test: [CMD, pg_isready]\n  cache:\n    image: i\n  a:\n    image: i\n    depends_on: [cache]\n  b:\n    image: i\n    depends_on:\n      db:\n        condition: service_healthy\n      cache:\n        condition: service_started\n  c:\n    image: i\n    depends_on:\n      cache: {}\n";
+    let p = ok(y);
+    assert_eq!(p.services["a"].needs["cache"], Condition::Started);
+    assert_eq!(p.services["b"].needs["db"], Condition::Healthy);
+    assert_eq!(p.services["b"].needs["cache"], Condition::Started);
+    assert_eq!(p.services["c"].needs["cache"], Condition::Started);
+}
+
+#[test]
+fn depends_on_problems() {
+    let e = err(&svc("    depends_on:\n      x:\n        condition: service_completed_successfully"));
+    assert!(e.contains("service_completed_successfully"), "{e}");
+    let e = err(&svc("    depends_on:\n      x:\n        required: false"));
+    assert!(e.contains("'required'"), "{e}");
+    assert_eq!(err(&svc("    depends_on: [ghost]")), "service 'a' needs unknown service 'ghost'");
+    // healthy needs a check on the target (shared validation)
+    let e = err("services:\n  d:\n    image: i\n  a:\n    image: i\n    depends_on:\n      d:\n        condition: service_healthy\n");
+    assert!(e.contains("no health check"), "{e}");
+}
+
+#[test]
+fn user_workdir_container_name() {
+    let p = ok(&svc("    user: \"1000:1000\"\n    working_dir: /srv\n    container_name: my-app.1"));
+    let a = &p.services["a"];
+    assert_eq!((a.user.as_deref(), a.working_dir.as_deref(), a.container_name.as_deref()), (Some("1000:1000"), Some("/srv"), Some("my-app.1")));
+    assert_eq!(ok(&svc("    user: 0")).services["a"].user.as_deref(), Some("0"));
+    assert!(err(&svc("    working_dir: rel")).contains("absolute"));
+    assert!(err(&svc("    container_name: \"bad name\"")).contains("container_name"));
+    assert!(err(&svc("    container_name: \"\"")).contains("container_name"));
+}
+
+#[test]
+fn container_name_collisions() {
+    // equal to its own service name is the common case and fine
+    ok("services:\n  a:\n    image: i\n    container_name: a\n");
+    let e = err("services:\n  a:\n    image: i\n    container_name: b\n  b:\n    image: i\n");
+    assert!(e.contains("collides"), "{e}");
+    let e = err("services:\n  a:\n    image: i\n    container_name: z\n  b:\n    image: i\n    container_name: z\n");
+    assert!(e.contains("collides"), "{e}");
+}
+
+#[test]
+fn healthcheck_forms() {
+    let h = |test: &str| {
+        ok(&svc(&format!("    healthcheck:\n      test: {test}\n      interval: 1m30s"))).services["a"].health.clone()
+    };
+    let shell = h("[CMD-SHELL, \"pg_isready -U x\"]").unwrap();
+    assert_eq!((shell.cmd.as_str(), shell.interval), ("pg_isready -U x", Duration::from_secs(90)));
+    assert_eq!(h("\"curl -f http://x/\"").unwrap().cmd, "curl -f http://x/");
+    assert_eq!(h("[CMD, curl, -f, \"http://x/a b\", \"it's\"]").unwrap().cmd, "curl -f 'http://x/a b' 'it'\\''s'");
+    assert!(h("[NONE]").is_none());
+    let d = ok(&svc("    healthcheck:\n      test: [CMD, true]")).services["a"].health.clone().unwrap();
+    assert_eq!(d.interval, crate::model::DEFAULT_HEALTH_INTERVAL);
+}
+
+#[test]
+fn healthcheck_problems() {
+    for (hc, needle) in [
+        ("test: [CMD, true]\n      retries: 3", "unsupported key 'retries'"),
+        ("interval: 5s", "test is required"),
+        ("test: [CMD]", "test must be"),
+        ("test: [WRONG, x]", "test must be"),
+        ("test: [CMD, true]\n      interval: soon", "invalid duration"),
+    ] {
+        let e = err(&svc(&format!("    healthcheck:\n      {hc}")));
+        assert!(e.contains(needle), "{hc}: {e}");
+    }
+}
+
+#[test]
+fn unsupported_keys_are_errors_but_extensions_are_ignored() {
+    for key in ["build: .", "networks: [n]", "restart: always", "secrets: [s]", "profiles: [p]", "stop_grace_period: 5s", "cap_add: [NET_ADMIN]", "deploy: {}"] {
+        let e = err(&svc(&format!("    {key}")));
+        let name = key.split(':').next().unwrap();
+        assert_eq!(e, format!("service 'a': unsupported key '{name}'"));
+    }
+    ok(&svc("    x-yarc: {user: root}\n    x-anything: 1"));
+    // top level
+    assert_eq!(err("services:\n  a:\n    image: i\nnetworks: {}\n"), "top level: unsupported key 'networks'");
+    assert_eq!(err("services:\n  a:\n    image: i\nsecrets: {}\n"), "top level: unsupported key 'secrets'");
+    ok("version: \"3.9\"\nx-common: &c {image: i}\nservices:\n  a: *c\n");
+}
+
+#[test]
+fn image_and_structure_errors() {
+    assert!(err("services:\n  a:\n    command: x\n").contains("image: is required"));
+    assert!(matches!(parse("services:\n  a:\n    image: ' '\n").unwrap_err(), ConfigError::EmptyImage(_)));
+    assert_eq!(parse("services: {}\n").unwrap_err(), ConfigError::NoServices);
+    assert!(matches!(parse("services: [").unwrap_err(), ConfigError::Yaml(_)));
+}
+
+#[test]
+fn yaml_anchors_and_merge_keys_work() {
+    let y = "x-base: &base\n  image: shared:1\n  environment: [K=v]\nservices:\n  a:\n    <<: *base\n  b:\n    <<: *base\n    image: other:2\n";
+    let p = ok(y);
+    assert_eq!(p.services["a"].image, "shared:1");
+    assert_eq!((p.services["b"].image.as_str(), p.services["b"].env["K"].as_str()), ("other:2", "v"));
+}
+
+/// The shape of the real PMS bundles (without `restart`, `secrets`, `profiles` and
+/// `stop_grace_period`, which arrive in C3/C4).
+#[test]
+fn pms_bundle_shape() {
+    let y = r#"
+services:
+  pms:
+    image: ssw-platform-pms:0.0.4
+    container_name: pms
+    environment:
+      - PMS_FIAS_SERVER_IP_ADDRESS=${HOST:?set it in .env}
+      - PMS_FIAS_SERVER_IP_PORT=${PMS_PORT:-5009}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${PMS_OTEL_ENDPOINT:-}
+      - JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8
+    volumes:
+      - pms-data:/data
+    depends_on:
+      - inspect
+  inspect:
+    image: ssw-platform-pms-inspect:0.0.3
+    container_name: inspect
+  dash:
+    image: dotnet/aspire-dashboard:9.5
+    ports:
+      - "127.0.0.1:${ASPIRE_HOST_PORT:-18888}:18888"
+volumes:
+  pms-data:
+"#;
+    let p = ok(y);
+    let pms = &p.services["pms"];
+    assert_eq!(pms.env["PMS_FIAS_SERVER_IP_ADDRESS"], "10.0.0.5");
+    assert_eq!(pms.env["PMS_FIAS_SERVER_IP_PORT"], "5009");
+    assert_eq!(pms.env["OTEL_EXPORTER_OTLP_ENDPOINT"], "");
+    assert_eq!(pms.env["JAVA_TOOL_OPTIONS"], "-XX:MaxRAMPercentage=75 -Dfile.encoding=UTF-8");
+    assert_eq!(pms.needs["inspect"], Condition::Started);
+    assert_eq!(p.services["dash"].ports[0].host, 18888);
+}

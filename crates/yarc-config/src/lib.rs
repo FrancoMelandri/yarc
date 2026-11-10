@@ -1,10 +1,12 @@
 //! Parses `yarc.yaml` into a validated project model.
 
+mod compose;
 mod dotenv;
 mod interpolate;
 mod model;
 mod validate;
 
+pub use compose::parse_compose;
 pub use dotenv::{parse_dotenv, DotenvError};
 pub use interpolate::{interpolate, InterpolationError};
 pub use model::*;
@@ -33,6 +35,14 @@ pub enum ConfigError {
     NeedsHealthWithoutCheck { service: String, target: String },
     #[error("dependency cycle involving service '{0}'")]
     Cycle(String),
+    #[error("{path}: {reason}")]
+    Interpolation { path: String, reason: String },
+    #[error("{scope}: unsupported key '{key}'")]
+    UnsupportedKey { scope: String, key: String },
+    #[error("{}{field}: {reason}", if service.is_empty() { String::new() } else { format!("service '{service}': ") })]
+    Field { service: String, field: String, reason: String },
+    #[error("service '{service}': container_name '{name}' collides with another service or container_name")]
+    NameCollision { service: String, name: String },
     #[error("project defines no services")]
     NoServices,
 }

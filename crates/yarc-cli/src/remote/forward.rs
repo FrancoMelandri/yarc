@@ -60,7 +60,8 @@ pub fn plan(cli: &Cli, paths: &Paths) -> Result<Option<Forward>> {
     };
     let globals = Globals {
         root: cli.root.as_deref().map(|r| paths.linux(r)).transpose()?,
-        file: if needs_project { Some(paths.linux(&cli.file)?) } else { None },
+        // discovery (compose.yaml, ...) must look at the Windows directory, not the translated path
+        file: if needs_project { Some(paths.linux(&crate::project::resolve_file(&cli.file))?) } else { None },
         project: cli.project.clone(),
     };
     Ok(Some(Forward { globals, command }))

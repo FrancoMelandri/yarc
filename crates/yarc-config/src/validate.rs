@@ -23,7 +23,23 @@ pub(crate) fn validate(p: &Project) -> Result<(), ConfigError> {
             }
         }
     }
+    check_names(p)?;
     check_cycles(p)
+}
+
+/// A `container_name` is an extra network name: it must not shadow another service's
+/// name or another service's `container_name` (its own service name is fine).
+fn check_names(p: &Project) -> Result<(), ConfigError> {
+    let mut taken: BTreeMap<&str, &str> = BTreeMap::new();
+    for (name, svc) in &p.services {
+        let Some(cn) = svc.container_name.as_deref() else { continue };
+        let collides = (cn != name && p.services.contains_key(cn))
+            || taken.insert(cn, name).is_some_and(|other| other != name);
+        if collides {
+            return Err(ConfigError::NameCollision { service: name.clone(), name: cn.to_string() });
+        }
+    }
+    Ok(())
 }
 
 fn check_cycles(p: &Project) -> Result<(), ConfigError> {

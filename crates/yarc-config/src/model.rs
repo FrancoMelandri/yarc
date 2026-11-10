@@ -15,6 +15,12 @@ pub struct Service {
     pub image: String,
     /// Replaces the image's default command (like Docker's `CMD`); empty keeps it.
     pub cmd: Vec<String>,
+    /// Replaces the image's `ENTRYPOINT`; `Some(vec![])` clears it, `None` keeps it.
+    pub entrypoint: Option<Vec<String>>,
+    /// Replaces the image's working directory; `None` keeps it.
+    pub working_dir: Option<String>,
+    /// Extra name the service answers to inside the project network (compose `container_name`).
+    pub container_name: Option<String>,
     /// Replaces the image's `USER` (name or `uid[:gid]`); `None` keeps it.
     pub user: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -158,6 +164,9 @@ impl RawService {
         Ok(Service {
             image: self.image,
             cmd: self.cmd,
+            entrypoint: None,
+            working_dir: None,
+            container_name: None,
             user,
             env: self.env,
             ports,
@@ -168,7 +177,7 @@ impl RawService {
     }
 }
 
-fn parse_port(service: &str, value: &str) -> Result<PortMapping, ConfigError> {
+pub(crate) fn parse_port(service: &str, value: &str) -> Result<PortMapping, ConfigError> {
     let err = |reason: &str| ConfigError::InvalidPort {
         service: service.into(),
         value: value.into(),
@@ -190,7 +199,7 @@ fn parse_port(service: &str, value: &str) -> Result<PortMapping, ConfigError> {
     Ok(PortMapping { host: num(host)?, container: num(container)?, protocol })
 }
 
-fn parse_volume(service: &str, value: &str) -> Result<VolumeMount, ConfigError> {
+pub(crate) fn parse_volume(service: &str, value: &str) -> Result<VolumeMount, ConfigError> {
     let err = |reason: &str| ConfigError::InvalidVolume {
         service: service.into(),
         value: value.into(),
@@ -217,16 +226,30 @@ fn parse_volume(service: &str, value: &str) -> Result<VolumeMount, ConfigError> 
     Ok(VolumeMount { source, target: target.into(), read_only })
 }
 
-/// Parses `500ms`, `5s`, `2m`, `1h`.
-fn parse_duration(s: &str) -> Option<Duration> {
-    let s = s.trim();
-    let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit())?);
-    let n: u64 = num.parse().ok()?;
-    match unit {
-        "ms" => Some(Duration::from_millis(n)),
-        "s" => Some(Duration::from_secs(n)),
-        "m" => Some(Duration::from_secs(n * 60)),
-        "h" => Some(Duration::from_secs(n * 3600)),
-        _ => None,
+/// Parses `500ms`, `5s`, `2m`, `1h` and compound forms such as `1m30s`.
+pub(crate) fn parse_duration(s: &str) -> Option<Duration> {
+    let mut rest = s.trim();
+    if rest.is_empty() {
+        return None;
     }
+    let mut total = Duration::ZERO;
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| !c.is_ascii_digit())?;
+        let n: u64 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let (unit, len) = if rest.starts_with("ms") {
+            (Duration::from_millis(n), 2)
+        } else if rest.starts_with('s') {
+            (Duration::from_secs(n), 1)
+        } else if rest.starts_with('m') {
+            (Duration::from_secs(n.checked_mul(60)?), 1)
+        } else if rest.starts_with('h') {
+            (Duration::from_secs(n.checked_mul(3600)?), 1)
+        } else {
+            return None;
+        };
+        total = total.checked_add(unit)?;
+        rest = &rest[len..];
+    }
+    Some(total)
 }

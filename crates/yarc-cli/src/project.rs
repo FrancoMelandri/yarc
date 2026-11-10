@@ -248,6 +248,12 @@ pub fn service_hash(service: &Service) -> String {
     if let Some(user) = &service.user {
         canonical.push_str(&format!("|user:{user}"));
     }
+    if let Some(entrypoint) = &service.entrypoint {
+        canonical.push_str(&format!("|entrypoint:{entrypoint:?}"));
+    }
+    if let Some(dir) = &service.working_dir {
+        canonical.push_str(&format!("|workdir:{dir}"));
+    }
     Digest::of(canonical.as_bytes()).hex().to_string()
 }
 
@@ -293,11 +299,60 @@ pub fn project_name(opts: &Opts) -> Result<String> {
         .ok_or_else(|| anyhow!("cannot derive a project name from {}; pass --project", file.display()))
 }
 
+/// Names tried, in order, when `--file` was left at its default and `yarc.yaml` does not exist.
+const COMPOSE_FILE_NAMES: [&str; 5] = ["yarc.yml", "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
+const DEFAULT_FILE: &str = "yarc.yaml";
+
+/// The project file to use: the requested one, or (only for the default name) the first
+/// of the usual names that exists in the current directory.
+pub fn resolve_file(requested: &Path) -> PathBuf {
+    if requested == Path::new(DEFAULT_FILE) && !requested.exists() {
+        if let Some(found) = discover_in(Path::new(".")) {
+            return PathBuf::from(found);
+        }
+    }
+    requested.to_path_buf()
+}
+
+fn discover_in(dir: &Path) -> Option<&'static str> {
+    COMPOSE_FILE_NAMES.into_iter().find(|n| dir.join(n).is_file())
+}
+
+/// `yarc.yaml` / `yarc.yml` use the native format; any other name is read as a Compose file.
+fn is_compose_file(file: &Path) -> bool {
+    !file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("yarc."))
+}
+
+/// Process environment layered over the `.env` file next to the compose file.
+fn compose_variables(dir: &Path) -> Result<BTreeMap<String, String>> {
+    let env_file = dir.join(".env");
+    if !env_file.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let text = std::fs::read_to_string(&env_file).with_context(|| format!("cannot read {}", env_file.display()))?;
+    yarc_config::parse_dotenv(&text, &|n: &str| std::env::var(n).ok()).with_context(|| env_file.display().to_string())
+}
+
+fn parse_project_file(file: &Path, text: &str) -> Result<Project> {
+    let parsed = if is_compose_file(file) {
+        let dotenv = compose_variables(file.parent().unwrap_or(Path::new(".")))?;
+        yarc_config::parse_compose(text, &|n: &str| std::env::var(n).ok().or_else(|| dotenv.get(n).cloned()))
+    } else {
+        yarc_config::parse(text)
+    };
+    parsed.with_context(|| file.display().to_string())
+}
+
 pub fn load(opts: &Opts) -> Result<Loaded> {
+    let requested = resolve_file(&opts.file);
+    let opts = &Opts { file: requested, name: opts.name.clone() };
     let name = project_name(opts)?;
     let file = std::path::absolute(&opts.file).with_context(|| format!("cannot resolve {}", opts.file.display()))?;
     let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read {}", file.display()))?;
-    let project = yarc_config::parse(&text).with_context(|| format!("{}", file.display()))?;
+    let project = parse_project_file(&file, &text)?;
     if project.services.is_empty() {
         bail!("{} defines no services", file.display());
     }
@@ -343,8 +398,25 @@ pub fn config(opts: &Opts) -> Result<()> {
             format!("  needs: {}", list.join(", "))
         };
         println!("  {name:<width$}  {}  image {}{needs}", container_name(&loaded.name, name), svc.image);
+        if let Some(alias) = &svc.container_name {
+            println!("  {:<width$}  also known as {alias}", "");
+        }
         if let Some(user) = &svc.user {
             println!("  {:<width$}  user {user}", "");
+        }
+        if let Some(entrypoint) = &svc.entrypoint {
+            println!("  {:<width$}  entrypoint {entrypoint:?}", "");
+        }
+        if let Some(dir) = &svc.working_dir {
+            println!("  {:<width$}  working dir {dir}", "");
+        }
+        if !svc.cmd.is_empty() {
+            println!("  {:<width$}  command {:?}", "", svc.cmd);
+        }
+        if !svc.env.is_empty() {
+            // names only: values may be secrets
+            let names: Vec<&str> = svc.env.keys().map(String::as_str).collect();
+            println!("  {:<width$}  env {}", "", names.join(", "));
         }
         if !svc.ports.is_empty() {
             println!("  {:<width$}  ports {}", "", format_ports(&svc.ports));
@@ -533,6 +605,8 @@ fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Lo
                 name: Some(cname.clone()),
                 overrides: yarc_runtime::Overrides {
                     cmd: def.cmd.clone(),
+                    entrypoint: def.entrypoint.clone(),
+                    working_dir: def.working_dir.clone(),
                     user: def.user.clone(),
                     env: def.env.iter().map(|(k, v)| format!("{k}={v}")).collect(),
                     ..Default::default()
@@ -600,7 +674,11 @@ fn host_names(loaded: &Loaded) -> Vec<String> {
     loaded
         .order
         .iter()
-        .flat_map(|s| [s.clone(), container_name(&loaded.name, s)])
+        .flat_map(|s| {
+            let alias = loaded.project.services[s].container_name.clone();
+            [Some(s.clone()), Some(container_name(&loaded.name, s)), alias.filter(|a| a != s)]
+        })
+        .flatten()
         .collect()
 }
 
@@ -813,6 +891,17 @@ mod tests {
 
     fn project(yaml: &str) -> Project {
         yarc_config::parse(yaml).unwrap()
+    }
+
+    #[test]
+    fn discovery_prefers_the_documented_order() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(discover_in(dir.path()), None);
+        std::fs::write(dir.path().join("docker-compose.yml"), "").unwrap();
+        assert_eq!(discover_in(dir.path()), Some("docker-compose.yml"));
+        std::fs::write(dir.path().join("compose.yaml"), "").unwrap();
+        assert_eq!(discover_in(dir.path()), Some("compose.yaml"));
+        assert!(is_compose_file(Path::new("docker-compose.yml")) && !is_compose_file(Path::new("/x/yarc.yaml")));
     }
 
     #[test]

@@ -1,7 +1,11 @@
 # Build: produces the release binaries for Linux and Windows.
 #
-#   * every push to main and every manual run -> artifacts on the workflow run
-#   * a tag `vX.Y.Z`                           -> the same artifacts, plus a GitHub Release
+#   * run on a tag `vX.Y.Z` -> the artifacts, plus a draft GitHub Release
+#   * run on a branch       -> the artifacts only (manual run, to try the build)
+#
+# The tag is created by tag.yml after a merge on main; it starts this workflow explicitly
+# (a tag pushed with the default GITHUB_TOKEN does not trigger workflows by itself). Pushing
+# a `v*` tag by hand works too.
 #
 # yarc has two halves. The Linux binary is the runtime (it also runs as the agent inside
 # WSL); the Windows binary is the client that forwards commands to it. A Windows user needs
@@ -10,7 +14,6 @@ name: Build
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 

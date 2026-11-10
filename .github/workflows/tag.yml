@@ -1,0 +1,59 @@
+# Tag: after a merge on main, tags the commit with the version of yarc-cli (`vX.Y.Z`)
+# and starts the Build workflow on that tag, which builds the artifacts and drafts the
+# release. This workflow does nothing else.
+#
+# To release: bump `version` in the workspace Cargo.toml in a PR and merge it. A merge that
+# leaves the version unchanged finds the tag already there and does nothing.
+name: Tag
+
+on:
+  push:
+    branches: [main]
+
+# One at a time, in order: two quick merges must not race for the same tag.
+concurrency:
+  group: tag
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the tag
+  actions: write # start the Build workflow
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version of yarc-cli
+        id: version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="yarc-cli"))')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Is it already tagged?
+        id: exists
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" > /dev/null; then
+            echo "::notice::${{ steps.version.outputs.tag }} already exists, nothing to do (bump the version to release)"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag the merge commit
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "yarc ${{ steps.version.outputs.version }}" "$GITHUB_SHA"
+          git push origin "refs/tags/${{ steps.version.outputs.tag }}"
+
+      - name: Start the build on the tag
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref "${{ steps.version.outputs.tag }}"

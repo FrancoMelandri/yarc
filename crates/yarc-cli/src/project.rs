@@ -294,6 +294,9 @@ pub fn service_hash(service: &Service) -> String {
     if !service.secrets.is_empty() {
         canonical.push_str(&format!("|secrets:{:?}", service.secrets));
     }
+    if !service.restart.is_no() {
+        canonical.push_str(&format!("|restart:{}", service.restart));
+    }
     Digest::of(canonical.as_bytes()).hex().to_string()
 }
 
@@ -443,6 +446,9 @@ pub fn config(opts: &Opts) -> Result<()> {
         }
         if !svc.profiles.is_empty() {
             println!("  {:<width$}  profiles {}", "", svc.profiles.join(", "));
+        }
+        if !svc.restart.is_no() {
+            println!("  {:<width$}  restart {}", "", svc.restart);
         }
         if let Some(grace) = svc.stop_grace_period {
             println!("  {:<width$}  stop grace period {}s", "", grace.as_secs());
@@ -666,7 +672,7 @@ fn up_service(root: &Path, store: &ContainerStore, net: &ProjectNet, loaded: &Lo
                 volumes,
                 labels: labels(project, service, &hash),
                 health: def.health.as_ref().map(|h| yarc_runtime::HealthSpec::shell(&h.cmd, h.interval)),
-                restart: yarc_runtime::RestartPolicy::No,
+                restart: def.restart,
             },
         )?;
     }
@@ -1027,6 +1033,11 @@ mod tests {
         };
         let plain = h("", "");
         assert_eq!(plain, h("    profiles: [p]\n    stop_grace_period: 5s\n", ""));
+        // a restart policy is part of the definition (changing it recreates the service) ...
+        assert_ne!(plain, h("    restart: always\n", ""));
+        assert_ne!(h("    restart: always\n", ""), h("    restart: on-failure:3\n", ""));
+        // ... but spelling the default out is not a change
+        assert_eq!(plain, h("    restart: \"no\"\n", ""));
         let with = h("    secrets: [s]\n", "secrets:\n  s:\n    file: ./f\n");
         assert_ne!(plain, with);
         assert_ne!(with, h("    secrets: [s]\n", "secrets:\n  s:\n    file: ./other\n"));

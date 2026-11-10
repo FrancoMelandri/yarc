@@ -904,6 +904,7 @@ name = "yarc-config"
 version = "0.0.1"
 dependencies = [
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "thiserror",
 ]
@@ -940,6 +941,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "yarc-config",
 ]
 
 [[package]]

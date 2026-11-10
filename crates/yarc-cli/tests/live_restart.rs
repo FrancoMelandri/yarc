@@ -245,3 +245,103 @@ fn the_status_shows_the_restart_count() {
     eventually("a restarted, running container", || ps(r, false).contains("Running (restarted 1 time)"));
     yarc(r, &["rm", "-f", "n"]);
 }
+
+/// A project directory with a `yarc.yaml`, driven through `up` / `project stop` / `down`.
+struct Proj {
+    root: tempfile::TempDir,
+    dir: tempfile::TempDir,
+}
+
+impl Proj {
+    fn new(yaml: &str) -> Proj {
+        let root = common::seeded_root();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("yarc.yaml"), yaml).unwrap();
+        Proj { root, dir }
+    }
+
+    fn set(&self, yaml: &str) {
+        std::fs::write(self.dir.path().join("yarc.yaml"), yaml).unwrap();
+    }
+
+    fn yarc(&self, args: &[&str]) -> Output {
+        let file = self.dir.path().join("yarc.yaml");
+        let mut full = vec!["--file", file.to_str().unwrap(), "-p", "demo"];
+        full.extend_from_slice(args);
+        yarc(self.root.path(), &full)
+    }
+
+    fn runs(&self, service: &str) -> usize {
+        runs(self.root.path(), &format!("demo-{service}-1"))
+    }
+}
+
+const RESTARTING: &str = "services:\n  flaky:\n    image: alpine:3.20\n    restart: always\n    cmd: [sh, -c, 'echo run; exit 1']\n  quiet:\n    image: alpine:3.20\n    cmd: [sh, -c, \"echo run; trap 'exit 0' TERM; while true; do sleep 0.2; done\"]\n";
+
+#[test]
+#[ignore]
+fn a_service_with_a_restart_policy_is_restarted_and_a_stop_of_the_project_is_final() {
+    let p = Proj::new(RESTARTING);
+    let up = p.yarc(&["up", "-d"]);
+    assert_eq!(up.status.code(), Some(0), "{}", text(&up.stderr));
+    eventually("flaky to restart", || p.runs("flaky") >= 3);
+    assert_eq!(p.runs("quiet"), 1, "services without a policy are left alone");
+
+    // a second `up` finds the supervised container up to date instead of starting another
+    let again = p.yarc(&["up", "-d"]);
+    assert_eq!(again.status.code(), Some(0), "{}", text(&again.stderr));
+    assert!(text(&again.stderr).contains("flaky: demo-flaky-1 is up to date"), "{}", text(&again.stderr));
+
+    assert_eq!(p.yarc(&["project", "stop"]).status.code(), Some(0));
+    eventually("everything stopped", || !text(&p.yarc(&["project", "ps"]).stdout).contains("Restarting"));
+    let before = p.runs("flaky");
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(p.runs("flaky"), before, "project stop is a manual stop");
+
+    // up brings it back, and keeps restarting it
+    assert_eq!(p.yarc(&["up", "-d"]).status.code(), Some(0));
+    eventually("restarting again", || p.runs("flaky") >= before + 2);
+
+    // down removes it for good, even in the middle of a crash loop
+    let down = p.yarc(&["down"]);
+    assert_eq!(down.status.code(), Some(0), "{}", text(&down.stderr));
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!ps(p.root.path(), true).contains("demo-"), "{}", ps(p.root.path(), true));
+    assert!(!p.root.path().join("containers/demo-flaky-1").exists());
+}
+
+#[test]
+#[ignore]
+fn changing_the_policy_recreates_the_service() {
+    let p = Proj::new(RESTARTING);
+    assert_eq!(p.yarc(&["up", "-d"]).status.code(), Some(0));
+    eventually("a restart", || p.runs("flaky") >= 2);
+    p.set(&RESTARTING.replace("restart: always", "restart: \"no\""));
+    let up = p.yarc(&["up", "-d"]);
+    assert_eq!(up.status.code(), Some(0), "{}", text(&up.stderr));
+    assert!(text(&up.stderr).contains("flaky: definition changed, recreating"), "{}", text(&up.stderr));
+    eventually("it to finish", || ps(p.root.path(), true).lines().any(|l| l.starts_with("demo-flaky-1") && l.contains("Exited (1)")));
+    assert_eq!(p.runs("flaky"), 1, "a fresh container, no policy: one run");
+    p.yarc(&["down"]);
+}
+
+#[test]
+#[ignore]
+fn up_reclaims_a_husk_left_in_the_store_by_an_earlier_run() {
+    // What an interrupted `down` once left behind: the container's directory with only a lock.
+    let p = Proj::new("services:\n  web:\n    image: alpine:3.20\n    cmd: [sh, -c, \"echo run; trap 'exit 0' TERM; while true; do sleep 0.2; done\"]\n");
+    let husk = p.root.path().join("containers/demo-web-1");
+    std::fs::create_dir_all(&husk).unwrap();
+    std::fs::write(husk.join("lock"), b"").unwrap();
+    let then = std::time::SystemTime::now() - Duration::from_secs(3600);
+    for path in [husk.join("lock"), husk.clone()] {
+        std::fs::File::open(path).unwrap().set_modified(then).unwrap();
+    }
+
+    let up = p.yarc(&["up", "-d"]);
+    assert_eq!(up.status.code(), Some(0), "{}", text(&up.stderr));
+    assert!(text(&up.stderr).contains("created and started demo-web-1"), "{}", text(&up.stderr));
+    eventually("the service", || p.runs("web") == 1);
+    assert_eq!(p.yarc(&["down"]).status.code(), Some(0));
+    assert!(!husk.exists());
+}

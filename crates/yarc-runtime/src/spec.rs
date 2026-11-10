@@ -8,7 +8,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, RuntimeError};
-use crate::restart::RestartPolicy;
+use yarc_config::RestartPolicy;
 
 /// Used when neither the image nor the user sets `PATH` (same as Docker).
 pub const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";

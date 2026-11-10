@@ -4,12 +4,14 @@ mod compose;
 mod dotenv;
 mod interpolate;
 mod model;
+mod restart;
 mod validate;
 
 pub use compose::parse_compose;
 pub use dotenv::{parse_dotenv, DotenvError};
 pub use interpolate::{interpolate, InterpolationError};
 pub use model::*;
+pub use restart::{ParsePolicyError, RestartPolicy};
 
 use thiserror::Error;
 

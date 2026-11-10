@@ -47,7 +47,8 @@ pub use network::{host_search_domains, NetInfo, PortMap, ProjectNet};
 pub use netns::{run_holder, stop_holder};
 pub use plan::{check_user, mount_plan, BindKind, MountOpts, SetupOp};
 pub use spec::{resolve_process, ContainerSpec, HealthSpec, ImageDefaults, Network, Overrides, Process, VolumeSpec, DEFAULT_PATH};
-pub use restart::{Backoff, Decision, ParsePolicyError, RestartPolicy, RestartTracker, RunEnd};
+pub use restart::{Backoff, Decision, RestartTracker, RunEnd};
+pub use yarc_config::{ParsePolicyError, RestartPolicy};
 pub use state::{describe, describe_at, now_ms, ContainerState, Health, HealthStatus, Status};
 
 /// How to start a container. The descriptors become the container's stdin,

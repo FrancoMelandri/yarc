@@ -13,6 +13,10 @@ use crate::state::{describe, ContainerState};
 
 const MAX_NAME: usize = 64;
 
+/// A container directory without a config that nothing has touched for this long is the
+/// remains of a creation that died, not one in progress.
+const UNFINISHED_AFTER: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone)]
 pub struct ContainerStore {
     dir: PathBuf,
@@ -43,7 +47,12 @@ impl ContainerStore {
     pub fn allocate(&self, name: Option<&str>) -> Result<String> {
         if let Some(name) = name {
             check_id(name)?;
-            return match fs::create_dir(self.container_dir(name)) {
+            let create = || fs::create_dir(self.container_dir(name));
+            let mut made = create();
+            if matches!(&made, Err(e) if e.kind() == ErrorKind::AlreadyExists) && self.reclaim_unfinished(name)? {
+                made = create();
+            }
+            return match made {
                 Ok(()) => Ok(name.to_string()),
                 Err(e) if e.kind() == ErrorKind::AlreadyExists => Err(RuntimeError::AlreadyExists(name.to_string())),
                 Err(e) => Err(RuntimeError::Io { context: format!("cannot create container {name}"), source: e }),
@@ -169,8 +178,51 @@ impl ContainerStore {
     }
 
     /// True while some process holds the container's supervisor lock.
+    ///
+    /// This only looks: it never creates the lock file. (It used to go through
+    /// [`try_acquire`](Self::try_acquire), so a poller such as `logs -f` could re-create the
+    /// file inside a container directory that `rm` was deleting, leaving a husk behind that
+    /// then blocked the name for good.) A missing file means nobody ever supervised it.
     pub fn is_supervised(&self, id: &str) -> Result<bool> {
-        Ok(self.try_acquire(id)?.is_none())
+        check_id(id).map_err(|_| RuntimeError::NotFound(id.to_string()))?;
+        let path = self.lock_path(id);
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                return if self.container_dir(id).is_dir() { Ok(false) } else { Err(RuntimeError::NotFound(id.to_string())) };
+            }
+            Err(e) => return Err(RuntimeError::Io { context: format!("cannot open {}", path.display()), source: e }),
+        };
+        match file.try_lock() {
+            Ok(()) => Ok(false), // released again when `file` is dropped
+            Err(TryLockError::WouldBlock) => Ok(true),
+            Err(TryLockError::Error(e)) => Err(RuntimeError::Io { context: format!("cannot lock {}", path.display()), source: e }),
+        }
+    }
+
+    /// A directory left behind by a creation that never finished (no `config.json`): killed
+    /// half way through unpacking, or a husk holding only a stale `lock`. Removes it when it
+    /// is certainly not in use: nobody holds its lock and nothing in it is recent (a creator
+    /// that is working right now keeps touching it). Returns whether it was removed.
+    fn reclaim_unfinished(&self, id: &str) -> Result<bool> {
+        let dir = self.container_dir(id);
+        if self.config_path(id).exists() || !dir.is_dir() || self.is_supervised(id)? {
+            return Ok(false);
+        }
+        let old_enough = |path: &Path| {
+            fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age >= UNFINISHED_AFTER)
+        };
+        let entries = fs::read_dir(&dir).map_err(io_err(format!("cannot read {}", dir.display())))?;
+        let all_old = old_enough(&dir) && entries.flatten().all(|e| old_enough(&e.path()));
+        if !all_old {
+            return Ok(false);
+        }
+        fs::remove_dir_all(&dir).map_err(io_err(format!("cannot remove {}", dir.display())))?;
+        Ok(true)
     }
 
     pub fn load(&self, id: &str) -> Result<ContainerSpec> {
@@ -294,6 +346,113 @@ mod tests {
         assert!(matches!(store.request_stop("../x"), Err(RuntimeError::NotFound(_))));
         assert!(!store.stop_requested("../x"));
         store.clear_stop_request("../x"); // must not touch anything outside the store
+    }
+
+    /// Pretends everything in `dir` was last touched a minute ago.
+    fn age(dir: &Path) {
+        let then = std::time::SystemTime::now() - Duration::from_secs(60);
+        let touch = |p: &Path| File::open(p).unwrap().set_modified(then).unwrap();
+        for entry in fs::read_dir(dir).unwrap() {
+            touch(&entry.unwrap().path());
+        }
+        touch(dir);
+    }
+
+    #[test]
+    fn probing_the_lock_never_creates_it() {
+        let (_r, store) = store();
+        let id = store.allocate(Some("c")).unwrap();
+        assert!(!store.is_supervised(&id).unwrap());
+        assert!(!store.lock_path(&id).exists(), "a poller must not leave files in a directory being removed");
+        assert!(matches!(store.is_supervised("nope"), Err(RuntimeError::NotFound(_))));
+        assert!(matches!(store.is_supervised("../x"), Err(RuntimeError::NotFound(_))));
+        // the real thing still works once a supervisor took the lock
+        let held = store.try_acquire(&id).unwrap().unwrap();
+        assert!(store.is_supervised(&id).unwrap());
+        drop(held);
+        assert!(!store.is_supervised(&id).unwrap());
+    }
+
+    #[test]
+    fn pollers_cannot_leave_a_husk_while_a_container_is_removed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let (_r, store) = store();
+        let stop = Arc::new(AtomicBool::new(false));
+        let pollers: Vec<_> = (0..4)
+            .map(|_| {
+                let (store, stop) = (store.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::SeqCst) {
+                        let _ = store.is_supervised("c"); // what ps, logs -f and the wait loops do
+                    }
+                })
+            })
+            .collect();
+        for round in 0..300 {
+            store.allocate(Some("c")).unwrap();
+            store.save(&spec(&store, "c")).unwrap();
+            fs::create_dir_all(store.rootfs_path("c").join("etc")).unwrap();
+            fs::write(store.rootfs_path("c").join("etc/hosts"), b"x").unwrap();
+            let removed = store.remove("c");
+            assert!(removed.is_ok() && !store.container_dir("c").exists(), "round {round}: {removed:?}");
+        }
+        stop.store(true, Ordering::SeqCst);
+        for p in pollers {
+            p.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_husk_with_only_a_stale_lock_does_not_block_its_name() {
+        let (_r, store) = store();
+        let dir = store.container_dir("web");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("lock"), b"").unwrap();
+        // fresh: it might be a creation in progress, so the name stays taken
+        assert!(matches!(store.allocate(Some("web")), Err(RuntimeError::AlreadyExists(_))));
+        assert!(dir.join("lock").exists());
+        age(&dir);
+        assert_eq!(store.allocate(Some("web")).unwrap(), "web");
+        assert!(dir.is_dir() && !dir.join("lock").exists(), "a clean directory was made again");
+    }
+
+    #[test]
+    fn only_unfinished_idle_directories_are_reclaimed() {
+        let (_r, store) = store();
+        // a creation killed while unpacking (rootfs but no config)
+        let dir = store.container_dir("half");
+        fs::create_dir_all(dir.join("rootfs/etc")).unwrap();
+        fs::write(dir.join("rootfs/etc/passwd"), b"x").unwrap();
+        age(&dir.join("rootfs/etc"));
+        age(&dir.join("rootfs"));
+        age(&dir);
+        assert_eq!(store.allocate(Some("half")).unwrap(), "half");
+        assert!(!dir.join("rootfs").exists());
+
+        // a finished container is never touched, however old
+        let id = store.allocate(Some("done")).unwrap();
+        store.save(&spec(&store, &id)).unwrap();
+        age(&store.container_dir(&id));
+        assert!(matches!(store.allocate(Some("done")), Err(RuntimeError::AlreadyExists(_))));
+        assert!(store.config_path(&id).exists());
+
+        // nor one somebody is supervising
+        let busy = store.container_dir("busy");
+        fs::create_dir(&busy).unwrap();
+        let held = store.try_acquire("busy").unwrap().unwrap();
+        age(&busy);
+        assert!(matches!(store.allocate(Some("busy")), Err(RuntimeError::AlreadyExists(_))));
+        drop(held);
+
+        // nor one with a recent file in it
+        let live = store.container_dir("live");
+        fs::create_dir(&live).unwrap();
+        fs::write(live.join("lock"), b"").unwrap();
+        age(&live);
+        fs::write(live.join("fresh"), b"").unwrap();
+        assert!(matches!(store.allocate(Some("live")), Err(RuntimeError::AlreadyExists(_))));
     }
 
     #[test]

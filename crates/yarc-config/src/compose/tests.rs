@@ -213,7 +213,7 @@ fn healthcheck_problems() {
 
 #[test]
 fn unsupported_keys_are_errors_but_extensions_are_ignored() {
-    for key in ["build: .", "networks: [n]", "restart: always", "cap_add: [NET_ADMIN]", "deploy: {}"] {
+    for key in ["build: .", "networks: [n]", "cap_add: [NET_ADMIN]", "deploy: {}"] {
         let e = err(&svc(&format!("    {key}")));
         let name = key.split(':').next().unwrap();
         assert_eq!(e, format!("service 'a': unsupported key '{name}'"));
@@ -347,4 +347,40 @@ fn needing_a_service_in_an_inactive_profile_is_an_error() {
     // nothing left at all
     let only = ok("services:\n  a:\n    image: i\n    profiles: [p]\n");
     assert_eq!(only.with_profiles(&[]).unwrap_err(), ConfigError::NoServices);
+}
+
+#[test]
+fn restart_policies() {
+    let policy = |v: &str| ok(&svc(&format!("    restart: {v}"))).services["a"].restart;
+    assert_eq!(policy("always"), RestartPolicy::Always);
+    assert_eq!(policy("unless-stopped"), RestartPolicy::UnlessStopped);
+    assert_eq!(policy("on-failure"), RestartPolicy::OnFailure { max: None });
+    assert_eq!(policy("\"on-failure:3\""), RestartPolicy::OnFailure { max: Some(3) });
+    assert_eq!(policy("\"no\""), RestartPolicy::No);
+    assert_eq!(policy("no"), RestartPolicy::No, "unquoted no is a string for this parser");
+    assert_eq!(policy("false"), RestartPolicy::No);
+    assert_eq!(ok(&svc("")).services["a"].restart, RestartPolicy::No);
+    for (v, needle) in [("sometimes", "invalid restart policy 'sometimes'"), ("on-failure:0", "at least 1"), ("true", "must be one of"), ("[always]", "must be one of")] {
+        let e = err(&svc(&format!("    restart: {v}")));
+        assert!(e.contains("service 'a': restart:") && e.contains(needle), "{v}: {e}");
+    }
+}
+
+#[test]
+fn restart_may_come_from_an_interpolated_value() {
+    let p = parse_compose(&svc("    restart: ${POLICY:-on-failure:2}"), &env).unwrap();
+    assert_eq!(p.services["a"].restart, RestartPolicy::OnFailure { max: Some(2) });
+}
+
+#[test]
+fn x_yarc_sets_the_user_and_wins_over_the_generic_key() {
+    assert_eq!(ok(&svc("    x-yarc: {user: root}")).services["a"].user.as_deref(), Some("root"));
+    assert_eq!(ok(&svc("    x-yarc:\n      user: 0")).services["a"].user.as_deref(), Some("0"));
+    assert_eq!(ok(&svc("    user: pms\n    x-yarc: {user: root}")).services["a"].user.as_deref(), Some("root"));
+    assert_eq!(ok(&svc("    user: pms\n    x-yarc: {}")).services["a"].user.as_deref(), Some("pms"));
+    assert_eq!(ok(&svc("    x-other: 1")).services["a"].user, None);
+    let e = err(&svc("    x-yarc: {memory: 1g}"));
+    assert_eq!(e, "service 'a' x-yarc: unsupported key 'memory'");
+    assert!(err(&svc("    x-yarc: {user: ''}")).contains("user"));
+    assert!(err(&svc("    x-yarc: [root]")).contains("x-yarc"));
 }

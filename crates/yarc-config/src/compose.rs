@@ -3,8 +3,8 @@
 //! Supported per service: `image`, `command`, `entrypoint`, `environment` (list or map),
 //! `ports` (short form), `volumes` (short form), `depends_on` (list or map with
 //! `condition`), `user`, `working_dir`, `healthcheck` (`test`, `interval`),
-//! `container_name`, `secrets` (short form, file secrets), `profiles` and
-//! `stop_grace_period`. Top-level `volumes` may only declare names. `x-...` keys and the
+//! `container_name`, `secrets` (short form, file secrets), `profiles`, `stop_grace_period`
+//! and `restart`. A service may carry an `x-yarc:` block with yarc-only settings (`user`). Top-level `volumes` may only declare names. `x-...` keys and the
 //! obsolete `version` are ignored; every other key is an error, so nothing is silently
 //! dropped.
 //!
@@ -18,7 +18,7 @@ use serde_yaml_ng::Value;
 
 use crate::interpolate::interpolate;
 use crate::model::{parse_duration, parse_port, parse_volume, DEFAULT_HEALTH_INTERVAL};
-use crate::{validate, Condition, ConfigError, Health, PortMapping, Project, SecretMount, Service, VolumeSource};
+use crate::{validate, Condition, ConfigError, Health, PortMapping, Project, RestartPolicy, SecretMount, Service, VolumeSource};
 
 #[derive(Debug, Deserialize)]
 struct RawCompose {
@@ -58,6 +58,15 @@ struct RawService {
     #[serde(default)]
     profiles: Vec<String>,
     stop_grace_period: Option<String>,
+    restart: Option<Value>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
+}
+
+/// The `x-yarc:` block of a service: settings compose has no place for.
+#[derive(Debug, Deserialize)]
+struct RawYarcExtension {
+    user: Option<Value>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -264,6 +273,16 @@ where
             return Err(ConfigError::UnsupportedKey { scope: format!("service '{name}'"), key: key.clone() });
         }
     }
+    let ext: Option<RawYarcExtension> = raw
+        .extra
+        .get("x-yarc")
+        .map(|v| serde_yaml_ng::from_value(v.clone()).map_err(|e| field_err(name, "x-yarc", e.to_string())))
+        .transpose()?;
+    if let Some(key) = ext.as_ref().and_then(|e| e.extra.keys().next()) {
+        return Err(ConfigError::UnsupportedKey { scope: format!("service '{name}' x-yarc"), key: key.clone() });
+    }
+    // x-yarc is yarc-specific, so it wins over the generic key
+    let user_value = ext.and_then(|e| e.user).or(raw.user);
     let image = raw.image.ok_or_else(|| field_err(name, "image", "is required"))?;
     if image.trim().is_empty() {
         return Err(ConfigError::EmptyImage(name.into()));
@@ -272,7 +291,7 @@ where
     let cmd = raw.command.map(|w| words(name, "command", w)).transpose()?.unwrap_or_default();
     let entrypoint = raw.entrypoint.map(|w| words(name, "entrypoint", w)).transpose()?;
 
-    let user = match raw.user {
+    let user = match user_value {
         None => None,
         Some(v) => {
             let u = scalar(&v).map(|s| s.trim().to_string()).ok_or_else(|| field_err(name, "user", "must be a string or number"))?;
@@ -306,6 +325,15 @@ where
             return Err(field_err(name, "profiles", format!("invalid profile name '{p}'")));
         }
     }
+    let restart = match raw.restart {
+        None => RestartPolicy::No,
+        // YAML 1.1 readers turn an unquoted `no` into false; accept that spelling too
+        Some(Value::Bool(false)) => RestartPolicy::No,
+        Some(Value::String(text)) => text
+            .parse()
+            .map_err(|e: crate::ParsePolicyError| field_err(name, "restart", e.to_string()))?,
+        Some(_) => return Err(field_err(name, "restart", "must be one of no, always, unless-stopped, on-failure[:N]")),
+    };
     let stop_grace_period = raw
         .stop_grace_period
         .map(|s| parse_duration(&s).ok_or_else(|| ConfigError::InvalidDuration { service: name.into(), value: s }))
@@ -321,6 +349,7 @@ where
         secrets,
         profiles: raw.profiles,
         stop_grace_period,
+        restart,
         user,
         env,
         ports,

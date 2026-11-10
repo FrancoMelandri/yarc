@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::ConfigError;
+use crate::{ConfigError, RestartPolicy};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
@@ -57,6 +57,8 @@ pub struct Service {
     pub profiles: Vec<String>,
     /// How long `down` / `stop` wait after SIGTERM when `-t` is not given.
     pub stop_grace_period: Option<Duration>,
+    /// What the supervisor does when the container exits.
+    pub restart: RestartPolicy,
     /// Replaces the image's `USER` (name or `uid[:gid]`); `None` keeps it.
     pub user: Option<String>,
     pub env: BTreeMap<String, String>,
@@ -141,6 +143,7 @@ struct RawService {
     health: Option<RawHealth>,
     #[serde(default)]
     needs: BTreeMap<String, Condition>,
+    restart: Option<String>,
 }
 
 /// `user: root`, `user: "1000:1000"` or a bare `user: 0`.
@@ -213,6 +216,14 @@ impl RawService {
             secrets: Vec::new(),
             profiles: Vec::new(),
             stop_grace_period: None,
+            restart: match self.restart {
+                Some(text) => text.parse().map_err(|e: crate::ParsePolicyError| ConfigError::Field {
+                    service: name.into(),
+                    field: "restart".into(),
+                    reason: e.to_string(),
+                })?,
+                None => RestartPolicy::No,
+            },
             user,
             env: self.env,
             ports,

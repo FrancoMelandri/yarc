@@ -159,3 +159,13 @@ fn empty_user_is_rejected() {
     let err = parse("services:\n  a:\n    image: x\n    user: ''\n").unwrap_err();
     assert!(matches!(err, ConfigError::EmptyUser(ref s) if s == "a"), "{err}");
 }
+
+#[test]
+fn restart_in_yarc_yaml() {
+    let policy = |v: &str| parse(&format!("services:\n  a:\n    image: x\n    restart: {v}\n")).map(|p| p.services["a"].restart);
+    assert_eq!(policy("always").unwrap(), RestartPolicy::Always);
+    assert_eq!(policy("on-failure:5").unwrap(), RestartPolicy::OnFailure { max: Some(5) });
+    assert_eq!(policy("\"no\"").unwrap(), RestartPolicy::No);
+    assert_eq!(parse("services:\n  a:\n    image: x\n").unwrap().services["a"].restart, RestartPolicy::No);
+    assert!(policy("often").unwrap_err().to_string().contains("service 'a': restart: invalid restart policy 'often'"));
+}

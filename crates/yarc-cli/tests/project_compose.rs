@@ -165,3 +165,28 @@ fn a_dependency_in_an_inactive_profile_is_reported() {
     assert!(err.contains("inactive profile") && err.contains("--profile"), "{err}");
     assert!(run(dir.path(), &["-p", "demo", "--profile", "observability", "project", "config"], &[]).status.success());
 }
+
+#[test]
+fn restart_and_x_yarc_show_in_the_resolved_project() {
+    let yaml = "services:\n  app:\n    image: app:1\n    restart: ${POLICY:-unless-stopped}\n    x-yarc:\n      user: root\n  job:\n    image: job:1\n    restart: on-failure:3\n  plain:\n    image: p:1\n";
+    let dir = project("compose.yaml", yaml, None);
+    let out = run(dir.path(), &["-p", "demo", "project", "config"], &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let out = text(&out.stdout);
+    assert!(out.contains("restart unless-stopped") && out.contains("restart on-failure:3"), "{out}");
+    assert!(out.contains("user root"), "{out}");
+    assert_eq!(out.matches("restart ").count(), 2, "a service without a policy prints none: {out}");
+    let out = run(dir.path(), &["-p", "demo", "project", "config"], &[("POLICY", "always")]);
+    assert!(text(&out.stdout).contains("restart always"));
+    let out = run(dir.path(), &["-p", "demo", "project", "config"], &[("POLICY", "whenever")]);
+    assert!(!out.status.success());
+    assert!(text(&out.stderr).contains("invalid restart policy 'whenever'"), "{}", text(&out.stderr));
+}
+
+#[test]
+fn restart_works_in_yarc_yaml_too() {
+    let dir = project("yarc.yaml", "services:\n  w:\n    image: w:1\n    restart: always\n", None);
+    let out = run(dir.path(), &["-p", "demo", "project", "config"], &[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("restart always"));
+}

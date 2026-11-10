@@ -875,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "yarc-agent"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "libc",
  "tempfile",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "yarc-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "yarc-config"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "yarc-oci"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "flate2",
  "libc",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "yarc-proto"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -934,7 +934,7 @@ dependencies = [
 
 [[package]]
 name = "yarc-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "nix 0.29.0",
  "serde",

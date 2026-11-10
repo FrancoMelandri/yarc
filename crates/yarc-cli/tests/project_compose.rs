@@ -246,6 +246,13 @@ fn dash_f_names_the_project_file_before_the_subcommand() {
     let out = run(dir.path(), &["-f", "stack.yml", "-p", "demo", "project", "config"], &[("TOKEN", "x")]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(text(&out.stdout).contains("stack.yml"));
+}
+
+// `project logs` needs the runtime (a WSL agent on Windows, which CI runners do not have).
+#[cfg(unix)]
+#[test]
+fn dash_f_does_not_steal_logs_follow() {
+    let dir = project("stack.yml", COMPOSE, None);
     // `project logs -f` is still follow, not a project file
     // (nothing was started, so the command itself says so: it parsed, and ran)
     let out = run(dir.path(), &["-f", "stack.yml", "-p", "demo", "project", "logs", "-f"], &[("TOKEN", "x")]);

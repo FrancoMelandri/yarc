@@ -68,6 +68,7 @@ fn problems_in_the_file_or_options_are_reported() {
     assert!(text(&out.stderr).contains("cannot read"), "{}", text(&out.stderr));
 }
 
+#[cfg(unix)]
 #[test]
 fn project_ps_and_logs_of_a_project_that_was_never_started() {
     let (root, dir) = setup(SHOP);
@@ -79,6 +80,7 @@ fn project_ps_and_logs_of_a_project_that_was_never_started() {
     assert!(text(&logs.stderr).contains("no containers"), "{}", text(&logs.stderr));
 }
 
+#[cfg(unix)]
 #[test]
 fn down_of_a_project_without_containers_is_a_no_op() {
     let (root, dir) = setup(SHOP);

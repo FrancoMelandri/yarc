@@ -70,7 +70,7 @@ jobs:
           fi
 
       - name: Test
-        run: cargo test --workspace --locked --release --target ${{ matrix.target }}
+        run: cargo test --workspace --locked --no-fail-fast --release --target ${{ matrix.target }}
 
       - name: Build
         run: cargo build -p yarc-cli --release --locked --target ${{ matrix.target }}

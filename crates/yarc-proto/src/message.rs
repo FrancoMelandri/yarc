@@ -101,6 +101,15 @@ pub struct CreateSpec {
     /// Restart policy text (`always`, `on-failure:3`, ...); absent: `no`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<String>,
+    /// Limits as the user wrote them (`512m`, `0.5`, `200`); absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_swap: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pids_limit: Option<String>,
     #[serde(default)]
     pub cmd: Vec<String>,
 }
@@ -144,6 +153,11 @@ pub enum Command {
     Ps {
         #[serde(default)]
         all: bool,
+    },
+    /// Resource use of running containers with limits; no ids: all of them.
+    Stats {
+        #[serde(default)]
+        ids: Vec<String>,
     },
     ContainerLs,
     Start {

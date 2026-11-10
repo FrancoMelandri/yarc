@@ -128,6 +128,41 @@ pub fn oom_kills() -> Option<u64> {
     oom_kill_count(&std::fs::read_to_string(dir.join("memory.events")).ok()?)
 }
 
+/// What a limits scope uses right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeUsage {
+    pub memory_current: u64,
+    /// `None`: no memory limit (`max`).
+    pub memory_max: Option<u64>,
+    pub pids_current: u64,
+    /// Total CPU time used since the scope was created.
+    pub cpu_usec: u64,
+}
+
+/// `max` -> `None`, a number -> `Some`.
+fn parse_limit(text: &str) -> Option<u64> {
+    text.trim().parse().ok()
+}
+
+fn cpu_usage_usec(cpu_stat: &str) -> Option<u64> {
+    cpu_stat.lines().find_map(|l| l.strip_prefix("usage_usec ")).and_then(|n| n.trim().parse().ok())
+}
+
+/// The usage of the limits scope the process `pid` (a container's supervisor) lives in. Only
+/// meaningful for a container started with limits: without them the supervisor shares a cgroup
+/// with unrelated processes. `None` when the files cannot be read.
+pub fn scope_usage(pid: u32) -> Option<ScopeUsage> {
+    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    let dir = Path::new("/sys/fs/cgroup").join(own_cgroup(&cgroup)?.trim_start_matches('/'));
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+    Some(ScopeUsage {
+        memory_current: read("memory.current")?.trim().parse().ok()?,
+        memory_max: parse_limit(&read("memory.max")?),
+        pids_current: read("pids.current")?.trim().parse().ok()?,
+        cpu_usec: cpu_usage_usec(&read("cpu.stat")?)?,
+    })
+}
+
 /// Makes the container's init (and so everything it starts) the kernel's preferred victim in
 /// the scope, ahead of the supervisor. Best effort: raising the score needs no privilege, and
 /// without it the limit still holds.
@@ -209,6 +244,40 @@ mod tests {
         let e = check_host(&r, 2).unwrap_err().to_string();
         assert!(e.contains("cpus 2.5") && e.contains("2 CPU"), "{e}");
         assert!(check_host(&Resources::default(), 1).is_ok());
+    }
+
+    #[test]
+    fn usage_files_are_read() {
+        assert_eq!(
+            cpu_usage_usec(
+                "usage_usec 1508000
+user_usec 1500000
+nr_throttled 31
+"
+            ),
+            Some(1_508_000)
+        );
+        assert_eq!(
+            cpu_usage_usec(
+                "user_usec 1
+"
+            ),
+            None
+        );
+        assert_eq!(
+            parse_limit(
+                "67108864
+"
+            ),
+            Some(64 << 20)
+        );
+        assert_eq!(
+            parse_limit(
+                "max
+"
+            ),
+            None
+        );
     }
 
     #[test]

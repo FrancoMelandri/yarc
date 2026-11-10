@@ -56,6 +56,7 @@ fn run() -> Result<u8> {
         Command::Image(ImageCommand::Rm(args)) => commands::image_rm(&root, args).map(|()| 0),
         Command::Image(ImageCommand::Unpack(args)) => commands::unpack(&root, args).map(|()| 0),
         Command::Create(args) => commands::create(&root, args).map(|()| 0),
+        Command::Stats(args) => commands::stats(&root, args).map(|()| 0),
         Command::Ps(args) => commands::container_ls(&root, args.all).map(|()| 0),
         Command::Shim(args) => detached::shim(&root, args).map(|()| 0),
         Command::Holder(args) => detached::holder(&root, args).map(|()| 0),

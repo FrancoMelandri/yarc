@@ -513,6 +513,9 @@ pub fn config(opts: &Opts) -> Result<()> {
         if !svc.restart.is_no() {
             println!("  {:<width$}  restart {}", "", svc.restart);
         }
+        if !svc.resources.is_unset() {
+            println!("  {:<width$}  limits {}", "", svc.resources);
+        }
         if let Some(grace) = svc.stop_grace_period {
             println!("  {:<width$}  stop grace period {}s", "", grace.as_secs());
         }
@@ -772,6 +775,7 @@ fn up_service(
                 labels: labels(project, service, &hash),
                 health: def.health.as_ref().map(|h| yarc_runtime::HealthSpec::shell(&h.cmd, h.interval)),
                 restart: def.restart,
+                resources: def.resources,
             },
         )?;
     }

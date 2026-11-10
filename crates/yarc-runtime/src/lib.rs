@@ -45,7 +45,7 @@ pub use lifecycle::{
 };
 pub use limits::{
     check_host, host_cpus, in_scope, oom_kills, prefer_as_oom_victim, require_scopes, scope_args, scope_command,
-    SCOPE_MARKER,
+    scope_usage, ScopeUsage, SCOPE_MARKER,
 };
 #[cfg(target_os = "linux")]
 pub use linux::{process_alive, start, Running};

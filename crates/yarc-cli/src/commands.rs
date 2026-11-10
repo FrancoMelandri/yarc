@@ -198,10 +198,12 @@ pub struct NewContainer {
     pub project_net: Option<(std::path::PathBuf, std::path::PathBuf)>,
     pub volumes: Vec<yarc_runtime::VolumeSpec>,
     pub restart: yarc_runtime::RestartPolicy,
+    pub resources: yarc_config::Resources,
 }
 
 #[cfg(unix)]
 fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
+    let resources = args.resources().map_err(anyhow::Error::msg)?;
     create_new(
         root,
         NewContainer {
@@ -220,6 +222,7 @@ fn create_container(root: &Path, args: CreateArgs) -> Result<String> {
             project_net: None,
             volumes: Vec::new(),
             restart: args.restart,
+            resources,
         },
     )
 }
@@ -257,7 +260,8 @@ pub fn create_new(root: &Path, new: NewContainer) -> Result<String> {
             .with_labels(new.labels)
             .with_health(new.health)
             .with_volumes(new.volumes)
-            .with_restart(new.restart);
+            .with_restart(new.restart)
+            .with_resources(new.resources);
         if let Some((dir, hosts)) = new.project_net {
             spec = spec.in_project_network(dir, hosts);
         }
@@ -285,6 +289,64 @@ pub fn container_ls(root: &Path, all: bool) -> Result<()> {
         if all || status.starts_with("Running") || status.starts_with("Restarting") {
             println!("{:<14} {:<24} {:<12} {}", c.id, c.image, status, c.args.join(" "));
         }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn stats(_root: &Path, _args: crate::cli::StatsArgs) -> Result<()> {
+    anyhow::bail!("stats needs Linux; run yarc inside WSL")
+}
+
+/// One-shot use of running containers that have limits: the CPU is the share of one CPU used
+/// over a one second sample. Only a container with limits has a cgroup of its own to measure.
+#[cfg(target_os = "linux")]
+pub fn stats(root: &Path, args: crate::cli::StatsArgs) -> Result<()> {
+    use std::time::{Duration, Instant};
+
+    let containers = yarc_runtime::ContainerStore::open(root)?;
+    let explicit = !args.ids.is_empty();
+    let specs = if explicit {
+        args.ids.iter().map(|id| containers.load(id)).collect::<std::result::Result<Vec<_>, _>>()?
+    } else {
+        containers.list()?
+    };
+
+    let mut sampled = Vec::new();
+    for spec in specs {
+        let skip = |why: &str| {
+            if explicit {
+                eprintln!("{}: {why}", spec.id);
+            }
+        };
+        if spec.resources.is_unset() {
+            skip("has no limits, so there is nothing to measure");
+            continue;
+        }
+        let pid = containers.load_state(&spec.id)?.and_then(|s| s.supervisor_pid);
+        let running = containers.status_text(&spec.id)?.starts_with("Running");
+        let first = pid.filter(|_| running).and_then(yarc_runtime::scope_usage);
+        match (pid, first) {
+            (Some(pid), Some(first)) => sampled.push((spec, pid, first)),
+            _ => skip("is not running"),
+        }
+    }
+
+    let began = Instant::now();
+    if !sampled.is_empty() {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    let elapsed = began.elapsed().as_micros().max(1) as f64;
+    println!("{:<14} {:>7} {:>21} {:>7} {:>6}", "CONTAINER ID", "CPU %", "MEM USAGE / LIMIT", "MEM %", "PIDS");
+    for (spec, pid, first) in sampled {
+        let Some(now) = yarc_runtime::scope_usage(pid) else { continue }; // it exited meanwhile
+        let cpu = now.cpu_usec.saturating_sub(first.cpu_usec) as f64 / elapsed * 100.0;
+        let (limit, percent) = match now.memory_max {
+            Some(max) => (human_bytes(max), format!("{:.1}%", now.memory_current as f64 / max as f64 * 100.0)),
+            None => ("-".to_string(), "-".to_string()),
+        };
+        let usage = format!("{} / {limit}", human_bytes(now.memory_current));
+        println!("{:<14} {:>6.1}% {:>21} {:>7} {:>6}", spec.id, cpu, usage, percent, now.pids_current);
     }
     Ok(())
 }

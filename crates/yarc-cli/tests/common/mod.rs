@@ -30,10 +30,10 @@ pub fn cache_dir() -> PathBuf {
 }
 
 /// Pulls whatever the cache is missing (once per process).
-fn ensure_cache() -> PathBuf {
+fn ensure_cache(extra: &[&str]) -> PathBuf {
     let cache = cache_dir();
     let _guard = FILL.lock().unwrap_or_else(|e| e.into_inner());
-    for image in IMAGES {
+    for image in IMAGES.iter().chain(extra) {
         let probe = Command::new(env!("CARGO_BIN_EXE_yarc"))
             .arg("--root")
             .arg(&cache)
@@ -57,7 +57,12 @@ fn ensure_cache() -> PathBuf {
 
 /// A new empty store (a temp directory) holding the cached images.
 pub fn seeded_root() -> tempfile::TempDir {
-    let cache = ensure_cache();
+    seeded_root_with(&[])
+}
+
+/// Like [`seeded_root`], with more images pulled into the cache (once) and available.
+pub fn seeded_root_with(extra: &[&str]) -> tempfile::TempDir {
+    let cache = ensure_cache(extra);
     let root = tempfile::tempdir().unwrap();
     for part in ["blobs", "refs"] {
         let from = cache.join(part);

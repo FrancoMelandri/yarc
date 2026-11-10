@@ -168,6 +168,36 @@ fn a_cpu_quota_throttles_busy_loops_to_about_the_quota() {
     stop_all(r, &["busy"]);
 }
 
+const JRE: &str = "eclipse-temurin:21-jre-alpine";
+
+#[test]
+#[ignore]
+fn a_jvm_sizes_itself_from_the_limits() {
+    let root = common::seeded_root_with(&[JRE]);
+    let r = root.path();
+    let java = |flags: &[&str]| {
+        let mut args = vec!["run", "--rm"];
+        args.extend_from_slice(flags);
+        args.extend_from_slice(&[JRE, "java", "-XshowSettings:system", "-XX:+PrintFlagsFinal", "-version"]);
+        let out = yarc(r, &args);
+        text(&out.stdout) + &text(&out.stderr)
+    };
+    let heap = |report: &str| -> u64 {
+        let line = report.lines().find(|l| l.contains(" MaxHeapSize ")).expect("MaxHeapSize");
+        line.split('=').nth(1).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse().ok()).unwrap()
+    };
+
+    let limited = java(&["-m", "256m", "--cpus", "1.5"]);
+    assert!(limited.contains("Provider: cgroupv2"), "{limited}");
+    assert!(limited.contains("Memory Limit: 256.00M"), "{limited}");
+    assert!(limited.contains("CPU Quota: 150000us"), "{limited}");
+    let heap_limited = heap(&limited);
+    assert!(heap_limited <= 256 << 20, "the heap ({heap_limited}) must fit the limit");
+
+    let free = java(&[]);
+    assert!(heap(&free) > heap_limited, "without limits the heap follows the machine, not the container");
+}
+
 #[test]
 #[ignore]
 fn the_pids_limit_stops_a_fork_bomb() {

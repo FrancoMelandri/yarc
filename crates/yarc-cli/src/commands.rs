@@ -337,7 +337,7 @@ pub fn stats(root: &Path, args: crate::cli::StatsArgs) -> Result<()> {
         std::thread::sleep(Duration::from_secs(1));
     }
     let elapsed = began.elapsed().as_micros().max(1) as f64;
-    println!("{:<14} {:>7} {:>21} {:>7} {:>6}", "CONTAINER ID", "CPU %", "MEM USAGE / LIMIT", "MEM %", "PIDS");
+    let mut rows = Vec::new();
     for (spec, pid, first) in sampled {
         let Some(now) = yarc_runtime::scope_usage(pid) else { continue }; // it exited meanwhile
         let cpu = now.cpu_usec.saturating_sub(first.cpu_usec) as f64 / elapsed * 100.0;
@@ -346,7 +346,16 @@ pub fn stats(root: &Path, args: crate::cli::StatsArgs) -> Result<()> {
             None => ("-".to_string(), "-".to_string()),
         };
         let usage = format!("{} / {limit}", human_bytes(now.memory_current));
-        println!("{:<14} {:>6.1}% {:>21} {:>7} {:>6}", spec.id, cpu, usage, percent, now.pids_current);
+        rows.push((spec.id, format!("{cpu:.1}%"), usage, percent, now.pids_current.to_string()));
+    }
+    let width = rows.iter().map(|r| r.0.len()).max().unwrap_or(0).max("CONTAINER ID".len());
+    let usage_width = rows.iter().map(|r| r.2.len()).max().unwrap_or(0).max("MEM USAGE / LIMIT".len());
+    println!(
+        "{:<width$}  {:>7}  {:>usage_width$}  {:>7}  {:>6}",
+        "CONTAINER ID", "CPU %", "MEM USAGE / LIMIT", "MEM %", "PIDS"
+    );
+    for (id, cpu, usage, percent, pids) in rows {
+        println!("{id:<width$}  {cpu:>7}  {usage:>usage_width$}  {percent:>7}  {pids:>6}");
     }
     Ok(())
 }
